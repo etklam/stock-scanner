@@ -49,9 +49,10 @@ opaque token，綁定資源、principal、filter、排序與 **scan id + 排序 
 跨 owner／跨 run／篡改／不符的 cursor 回 400（Phase 4.1 起 results cursor 綁定
 所屬 run——A run 的 cursor 用在 B run 會被拒，舊版 cursor 一律失效需重新取得第一頁）。
 所有資源查詢均 owner-scoped，其他 principal 的資源一律 404，不洩漏
-存在性。OpenAPI 契約（`docs/openapi.json`）與實際行為由 CI
-`scripts/openapi_snapshot.py --check` 每次驗證：202=`ScanAccepted`、同 key 重試=
-200 `ScanStatusOut`、changes=`Comparison`、export=`text/csv`、422=`ErrorEnvelope`。
+存在性。OpenAPI 契約（`docs/openapi.json`）與實際行為由
+`scripts/openapi_snapshot.py --check` 驗證（本地 gate `scripts/check.py` 的一步）：
+202=`ScanAccepted`、同 key 重試=200 `ScanStatusOut`、changes=`Comparison`、
+export=`text/csv`、422=`ErrorEnvelope`。
 
 ## 提交掃描
 

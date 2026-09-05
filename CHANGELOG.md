@@ -22,6 +22,9 @@
   checklist。1,000×504 core+ranking median 0.42s（目標 ≤10s）。
 - **跨平台**：Windows shutdown 測試改用 console Ctrl+C 語義；三平台 CI 綠
   （lint/format/mypy/tests/OpenAPI check/build/wheel smoke）。
+- **移除 GitHub Actions**（2026-09-06，費用考量）：品質把關改為本地
+  `scripts/check.py`（`--fast` 跳過 build/wheel smoke）；規則記錄於 `AGENTS.md`。
+  移除前最後三平台全綠 commit 為 `614e7c3`。
 - **安全收尾**：OSV advisory 檢查（2026-09-06，13 套件 0 已知漏洞）；token 寫入
   保持在發布前 0600；子程序診斷輸出以 token redaction 保留於測試失敗訊息。
 

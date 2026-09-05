@@ -326,3 +326,9 @@ results／snapshot 可讀、新 queue 欄位可用）。
   refresh 3/3；gate 維持 EOD_TRIAL。
 - 人工覆核：`scans review-export` 工具交付；**真人標記 pending**，不宣稱效用數字。
 - License 未決定：repository 無 LICENSE、pyproject 無 license 欄位，文件如實標明。
+
+### CI 現況註記（2026-09-06）
+
+GitHub Actions workflow 已因費用移除；上文各段提及的 CI run 編號屬歷史紀錄
+（最後一次三平台全綠為 `614e7c3`）。現行品質把關 = 本地
+`uv run python scripts/check.py`（規則見 [AGENTS.md](../AGENTS.md)）。

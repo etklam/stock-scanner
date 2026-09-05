@@ -210,6 +210,16 @@ uv run qscan --data-dir "$HOME/qscan-personal" scans review-export "$SCAN_ID" --
 
 ## 驗證與開發入口
 
+**無 CI 服務**：GitHub Actions 已因費用移除（見 [AGENTS.md](AGENTS.md)），
+品質把關係本地一個命令：
+
+```sh
+uv run python scripts/check.py          # ruff/mypy/pytest/OpenAPI check/build/wheel smoke
+uv run python scripts/check.py --fast   # 快版：唔 build、唔裝 wheel
+```
+
+或逐項手跑：
+
 ```sh
 uv sync --locked
 uv run pytest -m "not online"
@@ -219,6 +229,10 @@ uv run mypy
 uv build
 uv run python scripts/wheel_smoke.py
 ```
+
+單機代替唔到跨平台：release 前喺每個支援平台（macOS／Windows／Linux）各跑一次
+全套 gate；最後一次三平台自動驗證紀錄為 2026-09-06 commit `614e7c3`（全綠），
+之後嘅提交由本地 gate 覆蓋。
 
 共用服務由 `qscan.bootstrap.bootstrap` 組裝；`watchlists`、`market`、`scans`、`queries`、
 `reports`、`comparisons` 由 CLI 與 HTTP API 共用，`scans.prepare`／`execute_existing`

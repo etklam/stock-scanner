@@ -161,7 +161,7 @@ close-setup-scanner/
 │   ├── data-quality.md
 │   ├── operations.md
 │   └── adr/
-└── .github/workflows/ci.yml
+└── AGENTS.md            # agent 規則（GitHub Actions 已移除，改本地 scripts/check.py）
 ```
 
 運行資料不寫入 package 安裝目錄，也不提交 Git。預設用 `platformdirs` 的使用者資料目錄，並提供 `--data-dir`／`QSCAN_DATA_DIR` 覆寫。
@@ -880,10 +880,11 @@ thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測�
 
 **目的：** 令安裝、維護及限制都有可重現證據。
 
-- [x] 三平台 wheel installation／offline E2E：GitHub CI（ubuntu/windows/macos）
-  每次 push 跑 lint/format/mypy/pytest/OpenAPI check/build/wheel smoke；
-  本機實測為 macOS arm64（見 [release checklist](release-checklist.md) 第 8 節
-  如實列出未逐項手跑的組合）。
+- [x] 三平台 wheel installation／offline E2E：GitHub Actions 曾覆蓋
+  （ubuntu/windows/macos，最後全綠 `614e7c3`），**2026-09-06 起因費用移除**；
+  現行把關係本地 `scripts/check.py`（全套含 OpenAPI check/build/wheel smoke），
+  跨平台需於各平台手動執行——未手跑組合見 [release checklist](release-checklist.md)
+  第 8 節。
 - [x] Benchmark：`scripts/benchmark.py` 分段量測 100–2,000 symbols，輸出硬件、
   套件版本、各段耗時、raw samples、peak RSS 方法與限制；實測
   `docs/benchmarks/phase5-macos-arm64.json`；1,000×504 core+ranking median 0.42s

@@ -13,9 +13,9 @@
 | `uv run ruff check .` / `ruff format --check .` | 全綠 |
 | `uv run mypy` | Success: no issues found in 41 source files |
 | `uv build` | wheel + sdist 產生；wheel 內容掃描無 DB/token/snapshot/報告 |
-| installed-wheel smoke | CLI/HTTP/restart 段 + 新 backup→restore→restored replay/API 段全過（`scripts/wheel_smoke.py`） |
-| OpenAPI contract check | `scripts/openapi_snapshot.py --check` 已加入 CI 每次執行 |
-| 三平台 CI | `offline-quality` run 33986436893（commit 0689ab6）macOS/Ubuntu/Windows 全綠；之後提交由同 workflow 覆蓋 |
+| installed-wheel smoke | CLI/HTTP/restart 段 + backup→restore→restored replay/API 段全過（`scripts/wheel_smoke.py`） |
+| OpenAPI contract check | `scripts/openapi_snapshot.py --check`，屬本地 gate `scripts/check.py` 的一步 |
+| 三平台自動驗證 | **GitHub Actions 已於 2026-09-06 移除（費用考量，見 [AGENTS.md](../AGENTS.md)）**。最後一次三平台全綠為 commit `614e7c3`（含 Windows/macOS/Linux wheel smoke 與本 checklist 全部測試）；之後提交由本地 gate 單機覆蓋，跨平台需手動於各平台執行 `scripts/check.py` |
 
 ## 2. Phase 4.1 遺留問題（已於 `da4fefa` 修復，本輪僅引用）
 
@@ -61,7 +61,7 @@
 解讀：核心計算遠低於計劃目標；**實際日常成本在渲染（matplotlib 圖表）與
 強制重抓**，文件已如實標示。API slow-provider 段：worker 被可控慢 provider 卡住時
 status/results/冪等重放照常服務（submit 0.08s、status median 0.066s、無重複入隊）。
-CI 只跑小規模 correctness，絕對秒數不作跨 runner 硬門檻。
+自動化只跑小規模 correctness（`tests/`），絕對秒數不作任何硬門檻。
 
 ## 5. 真實來源與人工覆核
 
@@ -101,8 +101,10 @@ CI 只跑小規模 correctness，絕對秒數不作跨 runner 硬門檻。
 
 ## 8. 未完成 / 已知限制（如實列出）
 
-- **Windows/Linux 本機未逐項手跑 Phase 5 新增演練**：由 GitHub 三平台 CI
-  （含 Windows wheel smoke）覆蓋；本機只實測 macOS arm64。未手跑的組合不宣稱。
+- **Windows/Linux 本機未逐項手跑 Phase 5 新增演練**：截至 `614e7c3` 由 GitHub
+  三平台 CI（含 Windows wheel smoke）覆蓋；該 workflow 已於 2026-09-06 因費用移除，
+  之後的提交只由本地 gate（macOS）覆蓋——跨平台需於各平台手動
+  `uv run python scripts/check.py`，未手跑的組合不宣稱。
 - 人工覆核無真人標記（見第 5 節）；review export 是工具，不是結論。
 - 排程範例（operations.md）只提供檔案，未在任何使用者機器安裝或啟用。
 - 渲染效能受 matplotlib 支配；未做跨平台渲染效能宣稱。
