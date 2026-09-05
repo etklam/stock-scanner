@@ -4,7 +4,7 @@
 <style>
 *{box-sizing:border-box}body{margin:0;background:#faf9f5;color:#24343b;font:16px/1.65 system-ui,sans-serif}
 main{max-width:1100px;margin:auto;padding:40px 24px}h1{font:600 2rem/1.25 Georgia,serif;margin:0 0 16px}
-h2{font-size:1.35rem;margin:44px 0 12px}h3{font-size:1.1rem;margin:28px 0 8px}p{max-width:75ch}
+h2{font-size:1.35rem;margin:44px 0 12px}h3{font-size:1.1rem;margin:28px 0 8px}p{max-width:75ch;overflow-wrap:anywhere}
 .meta{overflow-wrap:anywhere;color:#485960;font-size:.9rem}.notice{padding:16px;background:#f4e9d5;color:#644211}
 .scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}
 th,td{text-align:left;padding:12px 10px;border-bottom:1px solid #cbd1cf;vertical-align:top}th{color:#345361}
@@ -31,13 +31,17 @@ code{overflow-wrap:anywhere}details{margin:12px 0}summary{cursor:pointer}summary
 <td>{{ r.analysis.selected_window.features.get('prior_move') }}</td><td>{{ r.analysis.features.get('contraction_ratio') }}</td><td>{{ r.analysis.selected_window.features.get('distance_to_resistance') }}</td></tr>{% endfor %}
 </tbody></table></div>
 {% for r in group %}<details><summary>{{ r.instrument.display_symbol }} · 分項分數與原因</summary><p>{{ r.analysis.selected_window.score_breakdown }}</p>
-{% for reason in r.analysis.reasons %}<p>{{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}
-{% for reason in r.analysis.selected_window.reasons %}<p>{{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}</details>
+{% set evidence = report.explanations[r.instrument.id|string] %}
+<p>Symbol warnings: {{ evidence.symbol_warnings|join(', ') }}</p>
+{% for reason in evidence.symbol_reasons %}<p>Symbol · {{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}
+{% for reason in evidence.selected_window_reasons %}<p>Selected window · {{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}
+{% for window in evidence.windows %}<p>Window {{ window.window_sessions }} · available={{ window.available }} · eligible={{ window.eligible }} · {% for reason in window.reasons %}{{ reason.code }} {{ reason.parameters }} {% endfor %}</p>{% endfor %}</details>
 {% if images.get(r.instrument.id|string) %}<figure><img alt="{{ r.instrument.display_symbol }} Close, SMA10/20/50, selected window and close resistance" src="data:image/png;base64,{{ images[r.instrument.id|string] }}"><figcaption>整理窗口截止 reference session {{ report.run.context.reference_session }}；圖表來自本 run 的 immutable snapshot。</figcaption></figure>{% endif %}
 {% endfor %}{% endif %}{% endfor %}
 <h2>每日變化</h2><p class="meta">Baseline {{ report.comparison.previous_run_id or 'None' }} · {{ report.comparison.previous_session }} → {{ report.comparison.current_session }} · {{ report.comparison.binding }}</p>
 {% for reason in report.comparison.reasons %}<p>{{ reason }}</p>{% endfor %}
 {% for change in report.comparison.changes %}<p><strong>{{ change.symbol or 'Comparison' }}</strong> · {{ change.codes|join(', ') }} · {{ change.reasons|join(', ') }}</p>{% else %}<p>沒有記錄到變化。</p>{% endfor %}
 <h2>資料問題與排除</h2>{% for r in report.run.results if r.category != 'evaluated' %}<p>{{ r.instrument.display_symbol }} · {{ r.category }} · {% for reason in r.analysis.reasons %}{{ reason.code }} {% endfor %}</p>{% else %}<p>沒有標的資料錯誤或排除。</p>{% endfor %}
+<details><summary>全部標的：symbol 與各窗口原因</summary>{% for r in report.run.results %}{% set evidence = report.explanations[r.instrument.id|string] %}<h3>{{ r.instrument.display_symbol }}</h3><p>Symbol warnings: {{ evidence.symbol_warnings|join(', ') }}</p>{% for reason in evidence.symbol_reasons %}<p>{{ reason.code }} {{ reason.parameters }}</p>{% endfor %}{% for window in evidence.windows %}<p>Window {{ window.window_sessions }} · available={{ window.available }} · eligible={{ window.eligible }} · {% for reason in window.reasons %}{{ reason.code }} {{ reason.parameters }} {% endfor %}</p>{% endfor %}{% endfor %}</details>
 <p class="meta">比率以小數表示：0.2 = 20%；None / null 表示無法取得，不代表零。</p>
 </main></body></html>

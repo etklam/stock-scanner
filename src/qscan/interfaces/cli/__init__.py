@@ -16,6 +16,7 @@ from typer import _click as click
 from typer.core import TyperGroup
 
 from qscan import __version__
+from qscan.adapters.provider_release import yahoo_release
 from qscan.application.contracts import ApplicationError, Run
 from qscan.bootstrap import Application
 from qscan.domain.models import DataMode, RunState
@@ -136,7 +137,7 @@ def application(
 def init(ctx: typer.Context) -> None:
     """Create or upgrade local storage, preserving existing data."""
     with application(ctx, initialize=True):
-        emit({"initialized": True, "provider_release": "BLOCKED"})
+        emit({"initialized": True, "provider_release": yahoo_release().status})
 
 
 @watchlists.command("import")
@@ -183,7 +184,11 @@ def run_output(run: Run, format: Output, directory: Path) -> None:
         for r in run.results
     ):
         typer.echo(
-            "Yahoo release BLOCKED: basis, metadata and incomplete-session review pending. "
+            "Yahoo release "
+            + yahoo_release().status
+            + ": "
+            + "; ".join(yahoo_release().blockers)
+            + ". "
             "Use demo, cache_only, report or snapshot replay.",
             err=True,
         )
@@ -239,7 +244,11 @@ def refresh(
                 typer.echo(warning, err=True)
         if any(i.error and i.error.value == "ADJUSTMENT_REVIEW_REQUIRED" for i in result.items):
             typer.echo(
-                "Yahoo release BLOCKED: basis, metadata and incomplete-session review pending. "
+                "Yahoo release "
+                + yahoo_release().status
+                + ": "
+                + "; ".join(yahoo_release().blockers)
+                + ". "
                 "Offline demo/cache_only/report/replay remain available.",
                 err=True,
             )
@@ -298,7 +307,7 @@ def report(
     from qscan.adapters.report_renderer import export
 
     with application(ctx, readonly=True) as instance:
-        value = instance.reports.build(scan_id, top)
+        value = instance.reports.build(scan_id, top, include_charts=format != ExportFormat.CSV)
         path = export(value, output, format.value, all_results=all_results)
         emit(
             {

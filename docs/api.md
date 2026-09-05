@@ -52,3 +52,22 @@ idempotency and executor recovery remain Phase 4; these are not live HTTP respon
 RefreshResult/RefreshItem expose resolved context, per-instrument available/updated/error/provenance/
 warnings and counts without leaking price payloads. WatchlistService.import_named owns explicit
 replacement and revision rules; transports only load the bounded input and present the result.
+
+## Phase 3.5 shared contracts (no HTTP implementation)
+
+- `Instrument.instrument_type` also supports `UNVERIFIED`; Yahoo offline import has UNKNOWN
+  currency/exchange unless an exchange hint was supplied. Run/snapshot Instrument values describe
+  the verified metadata used for that run. Cache metadata is local persistence, not an HTTP API.
+- `Report` adds `charts_included` (default true) and `explanations`, keyed by instrument UUID.
+  Each explanation separates symbol reasons/warnings, selected-window reasons and all windows'
+  availability, eligibility and reasons. Existing `run.results` and default JSON charts remain.
+- `ReportService.build(..., include_charts=False)` skips snapshot/chart computation; CLI CSV uses
+  this path and emits a companion summary JSON. `series()` remains a single-instrument entry.
+- Snapshot decode and engine compatibility are separate: supported schema-1 history can render
+  with old engine metadata. Exact replay rejects a different engine or unsupported rules major
+  before creating a run. No fallback to cache/current rules.
+- Repository resource reads use an actual SQLite read transaction, including readonly queries.
+  This provides resource consistency without waiting for the scanner's executor lock.
+
+These are synchronous shared service/DTO changes. Routes, auth, queue, idempotency and startup
+recovery remain Phase 4 work, not features of this milestone.

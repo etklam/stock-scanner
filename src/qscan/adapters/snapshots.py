@@ -11,7 +11,6 @@ from pathlib import Path
 
 from pydantic import ValidationError
 
-from qscan import __version__
 from qscan.application.contracts import ApplicationError, InputSnapshot
 from qscan.domain.models import ErrorCode
 
@@ -63,8 +62,6 @@ class SnapshotStore:
             if hashlib.sha256(content).hexdigest() != digest:
                 raise ValueError("Snapshot hash mismatch")
             value = InputSnapshot.model_validate_json(content)
-            if value.context.engine_version != __version__:
-                raise ValueError("Incompatible engine version")
             if canonical(value) != content:
                 raise ValueError("Noncanonical snapshot")
             return value

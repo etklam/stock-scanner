@@ -10,6 +10,8 @@ from pathlib import Path
 import pandas as pd
 import yfinance as yf
 
+from qscan.adapters.provider_release import yahoo_release
+
 OPTIONS = dict(
     interval="1d",
     auto_adjust=False,
@@ -92,7 +94,8 @@ def main() -> int:
         "checks": checks,
         "incomplete_session": "NOT_VERIFIED: requires an intraday observation and calendar cutoff",
         "price_basis": "REVIEW_REQUIRED: continuity and differing fields alone do not prove basis",
-        "online_provider_release": "BLOCKED",
+        "online_provider_release": yahoo_release().model_dump(mode="json"),
+        "scope": "This mechanical probe alone does not change the release decision",
     }
     args.output.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
     print(json.dumps(report, indent=2, allow_nan=False))

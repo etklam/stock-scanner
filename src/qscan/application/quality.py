@@ -12,7 +12,7 @@ def validate(
     raw: RawPrices,
     expected: tuple[date, ...],
 ) -> tuple[CloseSeries, tuple[str, ...]]:
-    if instrument.instrument_type == "UNSUPPORTED":
+    if instrument.instrument_type in {"UNSUPPORTED", "UNVERIFIED"}:
         raise ApplicationError(ErrorCode.UNSUPPORTED_INSTRUMENT)
     if raw.adjustment_review or raw.basis != "split_adjusted_close":
         raise ApplicationError(ErrorCode.ADJUSTMENT_REVIEW_REQUIRED)

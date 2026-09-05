@@ -13,7 +13,7 @@ from typing import Literal
 from jinja2 import Environment, select_autoescape
 
 from qscan.application.contracts import ApplicationError
-from qscan.application.reporting import ChartSeries, Report
+from qscan.application.reporting import ChartSeries, Report, reason_details
 from qscan.domain.models import ErrorCode
 
 CSV_FIELDS = (
@@ -48,6 +48,8 @@ CSV_FIELDS = (
     "previous_run_id",
     "comparison_codes",
     "limitation",
+    "selected_window_reasons",
+    "window_reasons",
 )
 
 
@@ -109,6 +111,7 @@ def render(
         for result in report.run.results:
             if not all_results and result.rank is None:
                 continue
+            evidence = reason_details(result)
             analysis = result.analysis
             window = analysis.selected_window
             features = window.features if window else {}
@@ -132,10 +135,11 @@ def render(
                         analysis.features.get("contraction_ratio"),
                         features.get("distance_to_resistance"),
                         json.dumps(window.score_breakdown if window else {}, ensure_ascii=False),
-                        json.dumps([r.model_dump() for r in analysis.reasons], ensure_ascii=False),
                         json.dumps(
-                            result.warnings
-                            + (result.provenance.warnings if result.provenance else ()),
+                            [r.model_dump() for r in evidence.symbol_reasons], ensure_ascii=False
+                        ),
+                        json.dumps(
+                            evidence.symbol_warnings,
                             ensure_ascii=False,
                         ),
                     ),
@@ -146,7 +150,7 @@ def render(
                 {
                     "data_label": "SYNTHETIC / DEMO"
                     if result.provenance and result.provenance.provider == "fixture"
-                    else "MARKET / UNVERIFIED",
+                    else "MARKET / CHECK PROVENANCE",
                     "ruleset": report.run.rules.ruleset_id,
                     "rules_version": report.run.rules.version,
                     "engine_version": report.run.context.engine_version,
@@ -165,6 +169,13 @@ def render(
                         ]
                     ),
                     "limitation": report.limitation,
+                    "selected_window_reasons": json.dumps(
+                        [r.model_dump() for r in evidence.selected_window_reasons],
+                        ensure_ascii=False,
+                    ),
+                    "window_reasons": json.dumps(
+                        [r.model_dump() for r in evidence.windows], ensure_ascii=False
+                    ),
                 }
             )
             writer.writerow({key: csv_text(value) for key, value in row.items()})
@@ -194,6 +205,30 @@ def export(
         content = render(report, format, all_results=all_results)
         directory.mkdir(parents=True, exist_ok=True)
         target = directory / f"scan-{report.run.id}.{format}"
+        if format == "csv":
+            summary = report.model_dump(
+                mode="json",
+                exclude={
+                    "charts",
+                    "explanations",
+                    "charts_included",
+                    "displayed_candidates",
+                    "chart_error",
+                },
+            )
+            summary["run"].pop("results")
+            summary_bytes = json.dumps(
+                summary, ensure_ascii=False, allow_nan=False, indent=2
+            ).encode("utf-8")
+            summary_path = directory / f"scan-{report.run.id}.summary.json"
+            # Both artifacts describe the same immutable run; publish summary before CSV.
+            with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
+                temporary = stream.name
+                stream.write(summary_bytes)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, summary_path)
+            Path(temporary).unlink(missing_ok=True)
         with tempfile.NamedTemporaryFile(dir=directory, delete=False) as stream:
             temporary = stream.name
             stream.write(content)

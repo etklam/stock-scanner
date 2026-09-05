@@ -1,8 +1,9 @@
 # Close-only Setup Scanner
 
-**Phase 3 離線 CLI MVP**：匯入名單、同步掃描、歷史查詢、固定 baseline 每日比較、
+**Phase 3.5 CLI / EOD 個人試用**：匯入名單、同步掃描、歷史查詢、固定 baseline 每日比較、
 JSON／CSV／離線 HTML 報告，以及 immutable snapshot replay。無需寫 Python 或啟動 server。
-Yahoo 正式來源仍 **BLOCKED**，目前不宣稱真實美股掃描已可日常使用。
+鎖定依賴下 Yahoo 為 **EOD_TRIAL**：可掃描已完成交易日、metadata 已驗證的美股／ETF。
+真實三標的流程已通過；盤中與 production 行情未放行，見 [驗收決定](docs/adr/0004-eod-trial-acceptance.md)。
 規則與階段邊界見 [開發計劃](docs/development-plan.md)。
 
 ## 安裝
@@ -77,6 +78,8 @@ uv run qscan doctor
 
 `--top` 只限制 HTML 顯示／report chart series（預設 30、最大 50），不改保存的 counts、
 results 或 rank；JSON 保存完整 results。CSV 預設候選，`--all-results` 包含非候選、排除及錯誤。
+JSON 預設保留 charts；CSV 不解碼 snapshot 或計算 charts，另產出 `scan-<id>.summary.json`，
+即使零候選仍可取得 run state、counts、warnings。三種格式皆保留 symbol／窗口原因。
 CSV 為 UTF-8 BOM，比率是小數（0.2 = 20%），空欄是 unavailable，不是零。
 `replay` 建立有 source_run_id 的新 run，不取代每日 baseline。
 
@@ -94,10 +97,27 @@ uv run qscan --data-dir "$HOME/qscan-personal" data refresh --watchlist us-growt
 uv run qscan --data-dir "$HOME/qscan-personal" scan --watchlist us-growth --ruleset breakout-v1
 ```
 
-**目前最後兩步會清楚顯示來源受阻，不能取得已驗收行情**。Yahoo 尚缺拆股／除息 Close
-口徑人工確認、真正盤中 incomplete-session 觀察，以及安全 exchange／currency／type metadata
-驗證。`doctor --online` 只作有限請求診斷，機械成功不解除 gate；沒有 skip-validation 開關。
-空 cache 的 `cache_only` 會回報無資料，不能把 demo 冒充個人名單的真實行情。
+最後兩步使用正常 Yahoo 路徑；無 `--as-of` 時取已完成收市及 30 分鐘 buffer 的最近交易日。
+未知市場／非 USD／非 EQUITY 或 ETF 拒絕；metadata 不參與策略評分。
+`doctor` 離線顯示集中 release 狀態，`doctor --online` 只做診斷，不改 gate。
+版本未經驗收時仍 BLOCKED；請保留 uv.lock。cache_only 的空 cache 仍會回報無資料。
+
+小名單完整實測可重跑（每次使用新的絕對資料目錄）：
+
+```sh
+uv run python scripts/live_cli_smoke.py --data-dir /tmp/qscan-my-live-test --as-of 2026-09-04 --output /tmp/qscan-live-result.json
+```
+
+或在上述 import / refresh 後繼續（macOS／Linux，使用 jq）：
+
+```sh
+SCAN_ID=$(uv run qscan --data-dir "$HOME/qscan-personal" scan --watchlist us-growth --format json | jq -r .id)
+uv run qscan --data-dir "$HOME/qscan-personal" report "$SCAN_ID" --format json --output ./output
+uv run qscan --data-dir "$HOME/qscan-personal" report "$SCAN_ID" --format csv --output ./output
+uv run qscan --data-dir "$HOME/qscan-personal" report "$SCAN_ID" --format html --output ./output
+uv run qscan --data-dir "$HOME/qscan-personal" scan --watchlist us-growth --data-mode cache_only --format json
+uv run qscan --data-dir "$HOME/qscan-personal" replay "$SCAN_ID" --format json
+```
 
 已有同名名單須明確 `--replace`；可加 `--expected-revision 1` 作外部 revision 保護。
 未指定時以讀到的 revision 作 optimistic concurrency check。`--name` 也可填 UUID 取代既有

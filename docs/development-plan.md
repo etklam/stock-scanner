@@ -833,6 +833,23 @@ concurrency 及 fixture overlap/full refresh 測試已完成；上列 Yahoo 綜�
 
 **驗收：** fresh install 可跑 fixture demo；有來源時可跑個人名單；第二次 cache-only 結果可重現；零候選、partial failure、report failure 都有明確輸出。完成本階段已有可用 CLI MVP。
 
+### Phase 3.5 — Stabilization & Live-data Acceptance
+
+2026-09-05 新增，以上 Phase 2/3 結果保留為當時歷史，以下為本輪交付。
+
+- [x] Windows UTF-8 regression 修復，保留 BOM／中文路徑測試。
+- [x] SQLite 真正 BEGIN read transaction；event 控制 run/watchlist/cache 競態。
+- [x] Report run/snapshot 各載入一次；CSV 不算 charts；100/1,000 symbols benchmark。
+- [x] 歷史 snapshot decode 與 exact replay engine 檢查分離。
+- [x] 結構化 symbol／窗口原因、空 CSV companion summary。
+- [x] 集中 Yahoo EOD_TRIAL gate、可靠 metadata、小名單真實 CLI 全流程。
+- [x] 桌面／窄螢幕 HTML 實際視覺驗收，沒有新增前端框架。
+- [ ] 新三平台 offline tests/build/installed-wheel CI：狀態見驗收紀錄。
+
+實際證據、限制及本輪 CI 見 [驗收紀錄](phase-0-status.md)；gate 收窄理由見
+[ADR 0004](adr/0004-eod-trial-acceptance.md)。盤中觀察、公開行情授權、production SLA
+不冒稱完成。Phase 4 可在三平台 gate 通過後開始共用 application service 的 API 工作。
+
 ### Phase 4 — API 與持久化 executor
 
 **目的：** App-ready 的介面，而不是只把 CLI 包一層 shell。

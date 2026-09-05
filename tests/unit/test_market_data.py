@@ -199,6 +199,12 @@ def test_yahoo_gate_retries_timeout_and_exclusive_end(monkeypatch):
             raise TimeoutError()
         return pd.DataFrame({"Close": [100]}, index=pd.DatetimeIndex(["2026-09-04"]))
 
+    from qscan.adapters.provider_release import ProviderRelease
+
+    monkeypatch.setattr(
+        "qscan.adapters.providers.yahoo_release",
+        lambda: ProviderRelease(status="BLOCKED", normal_fetch=False, blockers=("test",)),
+    )
     provider = YahooProvider(downloader=fake)
     instrument = provider.resolve("GOOD")
     with pytest.raises(ApplicationError) as exc:
@@ -254,3 +260,78 @@ def test_multi_ticker_partial_failure():
     with pytest.raises(ApplicationError) as exc:
         yahoo_rows(frame, "BAD")
     assert exc.value.code == ErrorCode.NO_DATA
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("symbol", "WRONG"),
+        ("currency", "CAD"),
+        ("exchangeName", "LSE"),
+        ("exchangeTimezoneName", "Europe/London"),
+        ("instrumentType", "CRYPTOCURRENCY"),
+        ("instrumentType", None),
+    ],
+)
+def test_yahoo_rejects_unknown_market_before_prices(field, value, monkeypatch):
+    monkeypatch.setattr("qscan.adapters.providers.time.sleep", lambda _: None)
+    metadata = {
+        "symbol": "AAPL",
+        "exchangeName": "NMS",
+        "currency": "USD",
+        "exchangeTimezoneName": "America/New_York",
+        "instrumentType": "EQUITY",
+    }
+    metadata[field] = value
+
+    def forbidden(*args):
+        raise AssertionError("Unverified market must not download prices")
+
+    provider = YahooProvider(metadata_loader=lambda *args: metadata, downloader=forbidden)
+    with pytest.raises(ApplicationError) as error:
+        provider.fetch(provider.resolve("AAPL"), date(2026, 9, 3), date(2026, 9, 4))
+    assert error.value.code == ErrorCode.UNSUPPORTED_INSTRUMENT
+
+
+def test_yahoo_etf_hint_and_legacy_identity():
+    from qscan.adapters.providers import verified_instrument
+
+    metadata = {
+        "symbol": "SPY",
+        "exchangeName": "PCX",
+        "currency": "USD",
+        "exchangeTimezoneName": "America/New_York",
+        "instrumentType": "ETF",
+    }
+    provider = YahooProvider()
+    instrument = verified_instrument(provider.resolve("SPY"), metadata)
+    assert instrument.instrument_type == "ETF" and instrument.exchange == "NYSE"
+    assert instrument.id == resolve_us("SPY").id
+    with pytest.raises(ApplicationError, match="contradicts"):
+        verified_instrument(provider.resolve("SPY", "NASDAQ"), metadata)
+    assert verified_instrument(resolve_us("SPY"), metadata).instrument_type == "ETF"
+
+
+def test_unaccepted_dependency_blocks_normal_provider(monkeypatch):
+    from qscan.adapters.provider_release import yahoo_release
+
+    monkeypatch.setattr("qscan.adapters.provider_release.version", lambda _: "unreviewed")
+    status = yahoo_release()
+    assert not status.normal_fetch and status.status == "BLOCKED"
+    assert len(status.blockers) == 3
+
+
+@pytest.mark.parametrize("error", [TimeoutError(), RuntimeError("HTTP 429")])
+def test_normal_metadata_failure_is_bounded(error, monkeypatch):
+    monkeypatch.setattr("qscan.adapters.providers.time.sleep", lambda _: None)
+    calls = []
+
+    def metadata(symbol, timeout):
+        calls.append((symbol, timeout))
+        raise error
+
+    provider = YahooProvider(metadata_loader=metadata, timeout=7)
+    with pytest.raises(ApplicationError) as caught:
+        provider.fetch(provider.resolve("AAPL"), date(2026, 9, 3), date(2026, 9, 4))
+    assert calls == [("AAPL", 7), ("AAPL", 7)]
+    assert caught.value.code == ErrorCode.NO_DATA

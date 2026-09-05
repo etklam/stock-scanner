@@ -11,11 +11,14 @@ from qscan.application.contracts import (
     Change,
     ChangeCode,
     Comparison,
+    InputItem,
     InputSnapshot,
     Repository,
     Run,
+    ScanResult,
     Snapshots,
 )
+from qscan.domain.analysis import Reason
 from qscan.domain.models import Contract, ErrorCode, RunState
 
 
@@ -184,6 +187,43 @@ class ChartSeries(Contract):
     close_resistance: FiniteFloat | None = None
 
 
+class WindowReasons(Contract):
+    window_sessions: int
+    available: bool
+    eligible: bool
+    reasons: tuple[Reason, ...]
+
+
+class ResultReasons(Contract):
+    symbol_reasons: tuple[Reason, ...]
+    symbol_warnings: tuple[str, ...]
+    selected_window_reasons: tuple[Reason, ...]
+    windows: tuple[WindowReasons, ...]
+
+
+def reason_details(result: ScanResult) -> ResultReasons:
+    analysis = result.analysis
+    selected = analysis.selected_window
+    windows = ((selected,) if selected else ()) + analysis.alternative_windows
+    return ResultReasons(
+        symbol_reasons=analysis.reasons,
+        symbol_warnings=(
+            *result.warnings,
+            *(result.provenance.warnings if result.provenance else ()),
+        ),
+        selected_window_reasons=selected.reasons if selected else (),
+        windows=tuple(
+            WindowReasons(
+                window_sessions=w.window_sessions,
+                available=w.available,
+                eligible=w.eligible,
+                reasons=w.reasons,
+            )
+            for w in windows
+        ),
+    )
+
+
 class Report(Contract):
     schema_version: int = 1
     run: Run
@@ -192,6 +232,8 @@ class Report(Contract):
     warnings: tuple[str, ...]
     charts: tuple[ChartSeries, ...] = ()
     chart_error: str | None = None
+    charts_included: bool = True
+    explanations: dict[str, ResultReasons] = {}
     displayed_candidates: int
     limitation: str = "close-only 初篩，流動性及日內形態未評估"
 
@@ -202,6 +244,10 @@ class ReportService:
 
     def series(self, identity: UUID, instrument_id: UUID) -> ChartSeries:
         run = self.repository.run(identity)
+        snapshot = self.load_snapshot(run)
+        return self.chart_data(run, snapshot, (instrument_id,))[0]
+
+    def load_snapshot(self, run: Run) -> InputSnapshot:
         if run.input_hash is None:
             raise ApplicationError(ErrorCode.SCAN_NOT_READY, "Run has no input snapshot")
         snapshot = self.snapshots.read(run.input_hash)
@@ -211,8 +257,17 @@ class ReportService:
             or snapshot.rules.config_hash() != run.config_hash
         ):
             raise ApplicationError(ErrorCode.SCAN_FAILED, "Snapshot does not match run")
-        result = next((r for r in run.results if r.instrument.id == instrument_id), None)
-        item = next((i for i in snapshot.items if i.instrument.id == instrument_id), None)
+        return snapshot
+
+    def chart_data(
+        self, run: Run, snapshot: InputSnapshot, identities: tuple[UUID, ...]
+    ) -> tuple[ChartSeries, ...]:
+        results = {r.instrument.id: r for r in run.results}
+        items = {i.instrument.id: i for i in snapshot.items}
+        return tuple(self._chart(run, results.get(i), items.get(i)) for i in identities)
+
+    @staticmethod
+    def _chart(run: Run, result: ScanResult | None, item: InputItem | None) -> ChartSeries:
         if result is None or item is None:
             raise ApplicationError(ErrorCode.NOT_FOUND)
         if item.series is None:
@@ -228,7 +283,7 @@ class ReportService:
         window = result.analysis.selected_window
         end = series.sessions.index(run.context.reference_session)
         return ChartSeries(
-            instrument_id=instrument_id,
+            instrument_id=item.instrument.id,
             symbol=item.instrument.display_symbol,
             sessions=series.sessions,
             closes=series.closes,
@@ -238,19 +293,19 @@ class ReportService:
             close_resistance=window.features.get("close_resistance") if window else None,
         )
 
-    def build(self, identity: UUID, top: int = 30) -> Report:
+    def build(self, identity: UUID, top: int = 30, *, include_charts: bool = True) -> Report:
         if not 1 <= top <= 50:
             raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Top must be 1..50")
         run = self.repository.run(identity)
         displayed = [r for r in run.results if r.rank is not None][:top]
-        charts = []
+        charts: tuple[ChartSeries, ...] = ()
         error = None
-        for result in displayed:
+        if include_charts and displayed:
             try:
-                charts.append(self.series(identity, result.instrument.id))
+                snapshot = self.load_snapshot(run)
+                charts = self.chart_data(run, snapshot, tuple(r.instrument.id for r in displayed))
             except ApplicationError:
                 error = "SNAPSHOT_UNAVAILABLE: chart omitted; no cache fallback"
-                break
         if run.state not in (RunState.SUCCEEDED, RunState.PARTIAL):
             error = f"RUN_{run.state.value}: no successful scan claimed"
         warnings: set[str] = set()
@@ -271,4 +326,6 @@ class ReportService:
             charts=tuple(charts),
             chart_error=error,
             displayed_candidates=len(displayed),
+            charts_included=include_charts,
+            explanations={str(r.instrument.id): reason_details(r) for r in run.results},
         )

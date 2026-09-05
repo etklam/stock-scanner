@@ -636,7 +636,7 @@ def test_partial_failed_running_exports_preserve_state(setup, tmp_path):
             instance, "report", str(run.id), "--format", "json", "--output", str(tmp_path)
         )
         assert result.exit_code == 0
-        exported = json.loads((tmp_path / f"scan-{run.id}.json").read_text())
+        exported = json.loads((tmp_path / f"scan-{run.id}.json").read_text(encoding="utf-8"))
         assert exported["run"]["state"] == expected
         if expected == RunState.FAILED:
             assert "RUN_FAILED" in exported["chart_error"]

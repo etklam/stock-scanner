@@ -235,8 +235,11 @@ def test_snapshot_damage_fails_explicitly(setup, damage):
         payload = json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
         digest = hashlib.sha256(payload).hexdigest()
         app.snapshots.path(digest).write_bytes(gzip.compress(payload))
-        with pytest.raises(ApplicationError):
-            app.snapshots.read(digest)
+        if damage == "engine":
+            assert app.snapshots.read(digest).context.engine_version == "incompatible"
+        else:
+            with pytest.raises(ApplicationError):
+                app.snapshots.read(digest)
         return
     with pytest.raises(ApplicationError) as exc:
         app.scans.replay(run.id)

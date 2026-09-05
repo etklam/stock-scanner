@@ -111,3 +111,48 @@ CSV 預設候選、--all-results 含所有分類；文字前綴 =/+/-/@ 防 form
 Yahoo release BLOCKED 分開呈現；lock BUSY 不是 Yahoo 問題。
 --online 額外做一次 AAPL 2024-06-03..07 來源診斷（一次 attempt、request timeout 5 秒），
 不保存市場 cache，也不放行來源；provider cookie／HTTP library 的內部快取由該 library 管理。
+
+## Phase 3.5 更新
+
+本節為目前行為，前文 Phase 2/3 中的來源 BLOCKED 屬歷史狀態。Yahoo 集中 release
+狀態見 `provider_release.py` 及 [ADR 0004](adr/0004-eod-trial-acceptance.md)。鎖定依賴為
+EOD_TRIAL；offline doctor 不依賴網絡，版本不符時如實列出 blocker。
+
+多 SELECT 組合一份 run/watchlist/cache 時，repository 顯式發出 SQLite `BEGIN`。
+Python 3.12 sqlite3 legacy 模式不會因 SELECT 或 SQLAlchemy engine.begin 自動開始
+DBAPI transaction。read connection 結束即 rollback/release；WAL writer 可同時 commit。
+包括 URI mode=ro 的 queries 均由 event 交錯測試驗證 actual in_transaction=True。
+每一資源一致，list 不承諾跨所有資源的同一時刻快照；GET 不取得整次 scan executor lock。
+
+SnapshotStore.read 僅驗證 gzip/hash/canonical/schema/資料形狀。schema 1 的歷史 engine
+metadata 可讀、可出圖；exact replay 另檢查目前 engine 與 breakout-v1 rules major 1，
+不相容時在建立新 run 之前拒絕。可配置的 major-1 rules 保存於快照中，minor/patch
+版本及參數重播使用原值，不拿今日預設覆蓋。缺檔／corruption／unknown schema 仍拒絕。
+
+一次 ReportService.build 載入一次完整 run；需圖表時只驗證解碼一次 snapshot，建立索引
+後批量產生最多 top 張 ChartSeries。單標的入口為 reports.series(run_id, instrument_id)。
+JSON 預設 charts 與 Phase 3 相同；新增 charts_included 表明是否要求 charts。
+CSV CLI 使用 include_charts=False，完全不讀 snapshot、不算 SMA。
+
+CSV 同時原子發布 `scan-<id>.summary.json`，包含 run identity/state/counts/context、
+comparison、sources/warnings/limitation，省略 results/charts。即使 CSV 只有 header，
+摘要也不遺失；不插入假 ticker。每個檔案各自以 temp/fsync/replace 發布，摘要先於 CSV，
+不是跨檔案 filesystem transaction；完成 run 不可變，重試同 ID 可恢復匯出。
+HTML/JSON/CSV 的 reason_details 共用 symbol reasons/warnings、selected window reasons、
+各 window available/eligible/reasons；原本 JSON run.results 語義保持不變。
+
+重跑效能測量（synthetic，不含 fetch/core）：
+
+```sh
+uv run python scripts/report_benchmark.py --output /tmp/qscan-report-benchmark.json
+```
+
+重跑小量線上驗收（新目錄；日期必須為完成 session）：
+
+```sh
+uv run python scripts/yahoo_acceptance.py --output /tmp/qscan-provider-acceptance.json
+uv run python scripts/live_cli_smoke.py --data-dir /tmp/qscan-live-new --as-of 2026-09-04 --output /tmp/qscan-live-cli.json
+```
+
+第一個 script 是證據收集，不能自行解除 gate。第二個逐步呼叫真正 CLI，只有摘要／hash
+写入指定 output，行情只在 data-dir。實際安裝、UI 與 CI 證據見 [驗收紀錄](phase-0-status.md)。

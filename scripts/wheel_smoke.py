@@ -80,6 +80,9 @@ def main() -> None:
         assert report["run"]["counts"]["candidate"] == 1 and report["charts"]
         with (output / f"scan-{identity}.csv").open(encoding="utf-8-sig", newline="") as stream:
             assert len(list(csv.DictReader(stream))) == 1
+        summary = json.loads((output / f"scan-{identity}.summary.json").read_text(encoding="utf-8"))
+        assert summary["run"]["counts"] == run["counts"]
+        assert "results" not in summary["run"]
         html = (output / f"scan-{identity}.html").read_text(encoding="utf-8")
         image = re.search(r'data:image/png;base64,([^" ]+)', html)
         assert image and base64.b64decode(image[1]).startswith(b"\x89PNG\r\n\x1a\n")
@@ -89,7 +92,7 @@ def main() -> None:
         assert replay["results"] == run["results"]
         diagnosis = invoke("doctor")
         assert isinstance(diagnosis, dict) and diagnosis["local_healthy"]
-        assert diagnosis["yahoo_release"] == "BLOCKED"
+        assert diagnosis["yahoo_release"] == "EOD_TRIAL"
         print(
             "Installed-wheel CLI smoke passed: "
             "init/demo/list/scan/show/changes/reports/replay/doctor"

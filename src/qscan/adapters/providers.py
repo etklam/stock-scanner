@@ -8,6 +8,7 @@ from uuid import NAMESPACE_URL, uuid5
 
 import pandas as pd
 
+from qscan.adapters.provider_release import yahoo_release
 from qscan.application.contracts import ApplicationError, Instrument, RawPrices
 from qscan.domain.models import ErrorCode
 
@@ -119,6 +120,65 @@ def download(symbol: str, start: date, end_exclusive: date, timeout: float) -> p
     return frame if frame is not None else pd.DataFrame()
 
 
+class MetadataLoader(Protocol):
+    def __call__(self, symbol: str, timeout: float) -> dict[str, object]: ...
+
+
+def yahoo_metadata(symbol: str, timeout: float) -> dict[str, object]:
+    # Read chart metadata directly: get_history_metadata() may trigger hidden 1h requests.
+    from yfinance.data import YfData  # type: ignore[import-untyped]
+
+    response = YfData().get(
+        url="https://query2.finance.yahoo.com/v8/finance/chart/" + symbol,
+        params={"range": "5d", "interval": "1d"},
+        timeout=timeout,
+    )
+    response.raise_for_status()
+    value = response.json()["chart"]["result"][0]["meta"]
+    if not isinstance(value, dict):
+        raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Invalid chart metadata")
+    return dict(value)
+
+
+def verified_instrument(instrument: Instrument, metadata: dict[str, object]) -> Instrument:
+    exchanges = {
+        "NMS": "NASDAQ",
+        "NGM": "NASDAQ",
+        "NCM": "NASDAQ",
+        "NYQ": "NYSE",
+        "ASE": "AMEX",
+        "PCX": "NYSE",
+        "BTS": "NYSE",
+    }
+    exchange = exchanges.get(str(metadata.get("exchangeName")))
+    kind = metadata.get("instrumentType")
+    if (
+        metadata.get("symbol") != instrument.provider_symbol
+        or exchange is None
+        or metadata.get("currency") != "USD"
+        or metadata.get("exchangeTimezoneName") != "America/New_York"
+        or kind not in {"EQUITY", "ETF"}
+    ):
+        raise ApplicationError(
+            ErrorCode.UNSUPPORTED_INSTRUMENT,
+            "Yahoo market/currency/type metadata is unsupported or unverified",
+        )
+    if (
+        instrument.instrument_type == "UNVERIFIED"
+        and instrument.exchange != "UNKNOWN"
+        and instrument.exchange != exchange
+    ):
+        raise ApplicationError(ErrorCode.UNSUPPORTED_INSTRUMENT, "Exchange hint contradicts Yahoo")
+    return Instrument(
+        id=instrument.id,
+        display_symbol=instrument.display_symbol,
+        provider_symbol=instrument.provider_symbol,
+        exchange=exchange,
+        currency="USD",
+        instrument_type="ETF" if kind == "ETF" else "EQUITY",
+    )
+
+
 class YahooProvider:
     name = "yahoo"
 
@@ -127,6 +187,7 @@ class YahooProvider:
         *,
         diagnostic: bool = False,
         downloader: Downloader = download,
+        metadata_loader: MetadataLoader = yahoo_metadata,
         attempts: int = 2,
         timeout: float = 15,
         concurrency: int = 2,
@@ -135,30 +196,58 @@ class YahooProvider:
             raise ValueError("Invalid bounded provider settings")
         self.diagnostic = diagnostic
         self.downloader = downloader
+        self.metadata_loader = metadata_loader
         self.attempts = attempts
         self.timeout = timeout
         self.limit = BoundedSemaphore(concurrency)
 
     def resolve(self, symbol: str, exchange: str | None = None) -> Instrument:
-        return resolve_us(symbol, exchange)
+        value = resolve_us(symbol, exchange)
+        return value.model_copy(
+            update={
+                "exchange": value.exchange if exchange else "UNKNOWN",
+                "currency": "UNKNOWN",
+                "instrument_type": "UNVERIFIED"
+                if value.instrument_type != "UNSUPPORTED"
+                else "UNSUPPORTED",
+            }
+        )
 
     def fetch(self, instrument: Instrument, start: date, end: date) -> RawPrices:
         # This switch enables diagnostics, not acceptance of the unverified price basis.
-        if not self.diagnostic:
-            raise ApplicationError(ErrorCode.ADJUSTMENT_REVIEW_REQUIRED, "Yahoo release is BLOCKED")
+        if not self.diagnostic and not yahoo_release().normal_fetch:
+            raise ApplicationError(
+                ErrorCode.ADJUSTMENT_REVIEW_REQUIRED,
+                "Yahoo release: " + "; ".join(yahoo_release().blockers),
+            )
         if instrument.instrument_type == "UNSUPPORTED":
             raise ApplicationError(ErrorCode.UNSUPPORTED_INSTRUMENT)
         with self.limit:
             for attempt in range(self.attempts):
                 try:
+                    verified = (
+                        instrument
+                        if self.diagnostic
+                        else verified_instrument(
+                            instrument,
+                            self.metadata_loader(instrument.provider_symbol, self.timeout),
+                        )
+                    )
                     raw = yahoo_rows(
                         self.downloader(
                             instrument.provider_symbol, start, end + timedelta(days=1), self.timeout
                         ),
                         instrument.provider_symbol,
                     )
-                    # Market identity and Close basis still require live/manual acceptance.
-                    return RawPrices(raw.rows, raw.provider, raw.basis, True, raw.split_sessions)
+                    # Diagnostics remain unsuitable for scanner scoring.
+                    return RawPrices(
+                        raw.rows,
+                        raw.provider,
+                        raw.basis,
+                        self.diagnostic,
+                        raw.split_sessions,
+                        None if self.diagnostic else verified,
+                    )
                 except Exception as exc:
                     if attempt + 1 == self.attempts:
                         if isinstance(exc, ApplicationError):

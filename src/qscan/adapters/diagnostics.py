@@ -9,6 +9,7 @@ from filelock import FileLock, Timeout
 from sqlalchemy import inspect, text
 
 from qscan.adapters.calendar import NYSECalendar
+from qscan.adapters.provider_release import yahoo_release
 from qscan.adapters.providers import YahooProvider
 from qscan.application.contracts import ApplicationError
 from qscan.domain.models import Contract
@@ -18,12 +19,9 @@ class Diagnosis(Contract):
     local_healthy: bool
     initialized: bool
     checks: dict[str, str]
-    yahoo_release: str = "BLOCKED"
-    release_blockers: tuple[str, ...] = (
-        "Manual split/dividend Close price-basis review",
-        "Live incomplete-session observation",
-        "Safe exchange/currency/instrument metadata verification",
-    )
+    yahoo_release: str
+    release_blockers: tuple[str, ...]
+    release_limitations: tuple[str, ...]
     online: str = "NOT_REQUESTED"
 
 
@@ -93,4 +91,7 @@ def diagnose(directory: Path, online: bool = False) -> Diagnosis:
         initialized=initialized,
         checks=checks,
         online=online_result,
+        yahoo_release=yahoo_release().status,
+        release_blockers=yahoo_release().blockers,
+        release_limitations=yahoo_release().limitations,
     )

@@ -31,7 +31,7 @@ class Instrument(Contract):
     provider_symbol: str
     exchange: str = "NYSE"
     currency: str = "USD"
-    instrument_type: Literal["EQUITY", "ETF", "UNSUPPORTED"] = "EQUITY"
+    instrument_type: Literal["EQUITY", "ETF", "UNSUPPORTED", "UNVERIFIED"] = "EQUITY"
 
 
 class Watchlist(Contract):
@@ -48,6 +48,7 @@ class RawPrices:
     basis: str = "split_adjusted_close"
     adjustment_review: bool = False
     split_sessions: tuple[date, ...] = ()
+    instrument: Instrument | None = None
 
 
 class Provenance(Contract):
@@ -59,6 +60,7 @@ class Provenance(Contract):
 
 
 class CacheEntry(Contract):
+    instrument: Instrument | None = None
     series: CloseSeries
     provenance: Provenance
     reviewed_at: datetime

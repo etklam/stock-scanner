@@ -133,3 +133,73 @@ Yahoo release **BLOCKED**，仍缺價格 basis 人工覆核、盤中 incomplete-
 metadata。Phase 3 離線能力交付；真實市場日常使用尚未放行。進 Phase 4 前應補本次三平台
 CI 與瀏覽器窄螢幕驗收並固定 shared DTO；Phase 4 再實作 HTTP/auth/idempotency/queue/
 crash recovery 及其安全合約測試，不能把現有同步 CLI 宣稱 App-ready。
+
+## Phase 3.5 — 2026-09-05 stabilization / live acceptance
+
+起點 checkout `419710f02ec77ece9a3694f29858891b7ceb0586`，git status 為空，未回退／
+覆蓋其他工作。本機 macOS 26.6 arm64、Python 3.12.12，uv.lock/依賴不變；沒有使用 sol-expert。
+
+**已查核的歷史 remote CI：** [Phase 3 run 33964702780](https://github.com/etklam/stock-scanner/actions/runs/33964702780)
+head 419710f，Ubuntu/macOS success，Windows pytest failure；Windows build/wheel 因此 skipped。
+不能用 Phase 2 三平台 success 取代。本次修正 `test_partial_failed_running_exports_preserve_state`
+的 UTF-8 read_text，source/tests/scripts 文字 IO／subprocess decoding 已 audit；沒有全域
+UTF-8 mode、skip Windows 或刪測試。
+
+本次先建立 regression 再修正：run/watchlist/cache 三個多 SELECT race 在舊碼均失敗，
+DBAPI `in_transaction=False`，可讀出混合資源；顯式 BEGIN 後通過，擴至 readonly 共六例。
+事件控制 writer 在 reader 第二 SELECT 前提交，沒有 sleep；WAL writer 可以 commit，
+reader 完整保留舊 state/counts/results、revision/members 或 cache，owner/atomic tests 保留。
+30 圖 call-count 舊碼為 31 run / 30 snapshot，修正後 1/1；CSV 為零 snapshot/chart 呼叫。
+
+其餘修復：engine/rules replay 檢查移到 service，歷史 schema-1 snapshot 仍可讀／出圖；
+reason_details 共用映射、CSV summary、Yahoo verified metadata / cache 相容路徑及集中 gate。
+主要檔案：repository.py、reporting.py、snapshots.py、services.py、providers.py、
+provider_release.py、report_renderer.py 與 tests/integration/test_phase35.py。
+
+### 本次本機結果
+
+uv sync --locked、Ruff check/format、strict mypy（33 source files）、build、repo 外
+中文／空格目錄 installed-wheel CLI smoke 已執行通過。offline pytest **186 passed**（8144 個第三方 deprecation warnings，無 skip），
+基線本輪實跑為 162 passed / 6094 warnings。
+uv 沙箱 cache 使用 `/tmp/qscan-uv-cache` / `--no-sync`；沒有改 Python encoding mode。
+
+### Live evidence 與範圍
+
+- [Yahoo dated acceptance](phase35-provider-acceptance.json)：2026-09-05 12:26 UTC，價格事件與三標的 metadata checks PASS。來源對照和 gate 條件見 [ADR 0004](adr/0004-eod-trial-acceptance.md)。
+- [真實 CLI](phase35-live-cli.json)：12:33 UTC，AAPL/MSFT/SPY，as-of 2026-09-04；init/import/refresh/scan/JSON+CSV+HTML/cache_only/replay 全部 exit 0。3 requested / 3 evaluated / 1 candidate / 0 errors，cache/replay 結果與 input hash 完全一致。第三方完整歷史只留臨時本機 DB/snapshots，不進 Git。
+- 正常 Yahoo 為 EOD_TRIAL，並非 diagnostic 開關放行。metadata 為 USD、美股市場群組、EQUITY/ETF；未知資料拒絕。盤中真實觀察與真實 429／歷史修訂事件 **未執行／未觀察到**，其邊界僅有 offline tests；不聲稱 production SLA 或授權再分發。
+
+### Report benchmark（實測秒）
+
+[原始記錄](phase35-report-benchmark.json)，同機 100/1,000 synthetic symbols，每隻 504 sessions、
+30 charts。script 分段量測，不把 fixture scan/fetch/core 或 report DTO 組裝計入表中。
+
+| symbols | run load | snapshot decode/verify | chart-data | HTML/PNG rendering |
+| --- | ---: | ---: | ---: | ---: |
+| 100 | 0.023022 | 0.018172 | 0.007665 | 12.114395 |
+| 1,000 | 0.065158 | 0.175570 | 0.008100 | 1.952539 |
+
+單次執行，第一個 rendering 包含 cold matplotlib/font cache，第二個為同 process warm 狀態；
+不能据此說 1,000 比 100 更快，亦非 end-to-end throughput／性能目標達標證明。
+可重跑 `uv run python scripts/report_benchmark.py --output <path>`；沒有全域 mutable cache。
+
+### 視覺驗收（本次實際瀏覽器）
+
+依本次授權使用只 bind 127.0.0.1 的临時靜態 server，在 Codex browser 檢視上述真實 HTML，
+桌面約 1265×712 和 390×844。Close/SMA/窗口/阻力圖及中文字體正常；mobile 圖縮放可見，
+細字仍需放大。表格自身水平 scroll（343px container、793px candidate table），document
+375px 沒有整頁橫向溢出。實際橫捲可讀右欄。
+另以明示 synthetic 的 report DTO variations 檢查長中文／ASCII 名單、32字元 symbol、
+null/None、PARTIAL、SUCCEEDED 零候選、chart error：文字換行、状态及告示可辨認。
+這些 edge cases 是視覺 fixtures，不冒稱真實市場發生。viewport 已恢復，server 完成後停止。
+沒有重新設計 UI 或前端框架；不是以 PNG signature 代替瀏覽器驗收。
+
+### 本輪 remote CI
+
+新分支推送與三平台完整 offline/build/wheel 驗收進行中；完成結果會另行補錄。
+
+### 尚未涵蓋
+
+真實盤中來源觀察、公開產品行情授權／SLA、kill-process recovery、backup/restore 演練、
+完整 API/auth/idempotency/queue、跨平台原生 GUI 視覺驗收。Phase 4 的前置共用服務已穩定，
+仍需本輪三平台 CI 通過才將此 milestone 標作跨平台完成；不代表 API 已存在。

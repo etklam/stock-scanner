@@ -1,5 +1,7 @@
 """Owner-scoped repositories; every operation owns a short-lived connection."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, date
 from pathlib import Path
 from time import perf_counter
@@ -71,6 +73,14 @@ class SQLiteRepository:
         self.engine, self.context, self.clock = engine, context, clock
         self.provider = provider
 
+    @contextmanager
+    def _read(self) -> Iterator[Connection]:
+        # sqlite3 legacy mode does not BEGIN for SELECT, even inside engine.begin().
+        # Explicit BEGIN fixes one resource's multi-SELECT view; close rolls it back.
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN")
+            yield connection
+
     def _instrument(self, connection: Connection, value: Instrument) -> None:
         connection.execute(
             sqlite_insert(instruments)
@@ -127,7 +137,7 @@ class SQLiteRepository:
             raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT) from exc
 
     def watchlist(self, identity: UUID) -> Watchlist:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             row = (
                 connection.execute(
                     select(watchlists).where(
@@ -153,7 +163,7 @@ class SQLiteRepository:
             )
 
     def watchlists(self) -> tuple[Watchlist, ...]:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             identities = (
                 connection.execute(
                     select(watchlists.c.id)
@@ -166,7 +176,7 @@ class SQLiteRepository:
         return tuple(self.watchlist(UUID(i)) for i in identities)
 
     def cache(self, instrument: Instrument) -> CacheEntry | None:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             info = connection.execute(
                 select(cache.c.document).where(
                     cache.c.instrument_id == str(instrument.id), cache.c.provider == self.provider
@@ -189,6 +199,9 @@ class SQLiteRepository:
             if not rows:
                 return None
             return CacheEntry(
+                instrument=Instrument.model_validate(info["instrument"])
+                if info.get("instrument")
+                else None,
                 series=CloseSeries(
                     instrument_id=instrument.id,
                     sessions=tuple(date.fromisoformat(r["session"]) for r in rows),
@@ -331,7 +344,7 @@ class SQLiteRepository:
             )
 
     def run(self, identity: UUID) -> Run:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             document = connection.execute(
                 select(runs.c.document).where(
                     runs.c.id == str(identity),
@@ -352,7 +365,7 @@ class SQLiteRepository:
             return Run.model_validate({**document, "results": tuple(values)})
 
     def runs(self) -> tuple[Run, ...]:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             identities = (
                 connection.execute(
                     select(runs.c.id)
@@ -365,7 +378,7 @@ class SQLiteRepository:
         return tuple(self.run(UUID(i)) for i in identities)
 
     def summaries(self, limit: int | None = 30) -> tuple[Run, ...]:
-        with self.engine.connect() as connection:
+        with self._read() as connection:
             statement = (
                 select(runs.c.document)
                 .where(runs.c.owner_id == self.context.principal)

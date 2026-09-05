@@ -10,6 +10,7 @@ from uuid import UUID, uuid4
 
 from filelock import FileLock
 
+from qscan import __version__
 from qscan.application.contracts import (
     ApplicationError,
     CacheEntry,
@@ -217,13 +218,27 @@ class MarketDataService:
         cached = self.repository.cache(instrument)
         usable: InputItem | None = None
         cache_error = ErrorCode.NO_DATA
+        hint_conflict = (
+            cached is not None
+            and cached.instrument is not None
+            and instrument.instrument_type == "UNVERIFIED"
+            and instrument.exchange != "UNKNOWN"
+            and instrument.exchange != cached.instrument.exchange
+        )
+        if hint_conflict and mode == DataMode.CACHE_ONLY:
+            return InputItem(instrument=instrument, error=ErrorCode.UNSUPPORTED_INSTRUMENT)
         if cached is not None:
-            if not cached.trusted or cached.provenance.provider != self.provider.name:
+            if (
+                hint_conflict
+                or not cached.trusted
+                or cached.provenance.provider != self.provider.name
+                or (self.provider.name == "yahoo" and cached.instrument is None)
+            ):
                 cache_error = ErrorCode.ADJUSTMENT_REVIEW_REQUIRED
             else:
                 try:
                     series, warnings = validate(
-                        instrument,
+                        cached.instrument or instrument,
                         RawPrices(
                             tuple(zip(cached.series.sessions, cached.series.closes, strict=True)),
                             provider=cached.provenance.provider,
@@ -231,7 +246,7 @@ class MarketDataService:
                         expected,
                     )
                     usable = InputItem(
-                        instrument=instrument,
+                        instrument=cached.instrument or instrument,
                         series=series,
                         warnings=warnings,
                         provenance=cached.provenance.model_copy(update={"cache": True}),
@@ -250,7 +265,10 @@ class MarketDataService:
             return usable
         revisions = cached.provenance.revisions if cached else ()
         distrust = cached is not None and (
-            not cached.trusted or cached.provenance.provider != self.provider.name
+            hint_conflict
+            or not cached.trusted
+            or cached.provenance.provider != self.provider.name
+            or (self.provider.name == "yahoo" and cached.instrument is None)
         )
         full = mode == DataMode.FORCE or due or distrust or cached is None or needs_older_history
         try:
@@ -281,12 +299,13 @@ class MarketDataService:
                         full = True
                     else:
                         overlap_expected = tuple(s for s in expected if s >= start)
-                        validate(instrument, raw, overlap_expected)
+                        validate(raw.instrument or instrument, raw, overlap_expected)
                         # Keep returned ordering and duplicates for validation; do not deduplicate.
                         raw = RawPrices(
                             tuple((s, c) for s, c in previous.items() if s < start) + raw.rows,
                             raw.provider,
                             raw.basis,
+                            instrument=raw.instrument,
                         )
             if full:
                 raw = self._fetch(instrument, expected[0], expected[-1])
@@ -306,6 +325,7 @@ class MarketDataService:
                     reason = now.isoformat() + ":full_history_revision"
                     revisions = (*revisions, reason)
                     self.repository.invalidate_cache(instrument, reason)
+            instrument = raw.instrument or instrument
             series, warnings = validate(instrument, raw, expected)
             fetched_at = self.clock.now().astimezone(UTC)
             provenance = Provenance(
@@ -314,6 +334,7 @@ class MarketDataService:
             self.repository.replace_cache(
                 instrument,
                 CacheEntry(
+                    instrument=instrument,
                     series=series,
                     provenance=provenance,
                     reviewed_at=fetched_at if full or cached is None else cached.reviewed_at,
@@ -323,6 +344,9 @@ class MarketDataService:
                 instrument=instrument, series=series, warnings=warnings, provenance=provenance
             )
         except ApplicationError as exc:
+            if exc.code == ErrorCode.UNSUPPORTED_INSTRUMENT:
+                self.repository.invalidate_cache(instrument, "market_metadata_rejected")
+                return InputItem(instrument=instrument, error=exc.code)
             if usable is not None and not distrust:
                 assert usable.provenance is not None
                 return usable.model_copy(
@@ -420,6 +444,10 @@ class ScanService:
             started = perf_counter()
             try:
                 items = tuple(self.market.obtain(i, expected, mode) for i in watchlist.instruments)
+                watchlist = watchlist.model_copy(
+                    update={"instruments": tuple(i.instrument for i in items)}
+                )
+                run = run.model_copy(update={"watchlist": watchlist})
                 snapshot = InputSnapshot(
                     context=context,
                     rules=config,
@@ -441,6 +469,16 @@ class ScanService:
             if source.input_hash is None:
                 raise ApplicationError(ErrorCode.SCAN_NOT_READY)
             snapshot = self.snapshots.read(source.input_hash)
+            if snapshot.rules.version.split(".")[0] != "1":
+                raise ApplicationError(
+                    ErrorCode.SCAN_FAILED, "Exact replay requires compatible rules"
+                )
+            if snapshot.context.engine_version != __version__:
+                raise ApplicationError(
+                    ErrorCode.SCAN_FAILED,
+                    "Exact replay requires the original engine version; "
+                    "historical reports remain readable",
+                )
             if (
                 snapshot.context != source.context
                 or snapshot.rules.config_hash() != source.config_hash

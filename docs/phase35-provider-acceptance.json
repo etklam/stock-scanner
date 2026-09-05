@@ -1,0 +1,75 @@
+{
+  "at": "2026-09-05T12:26:14.695164+00:00",
+  "python": "3.12.12",
+  "platform": "macOS-26.6-arm64-arm-64bit",
+  "versions": {
+    "yfinance": "0.2.66",
+    "pandas": "2.3.3",
+    "numpy": "2.5.2"
+  },
+  "checks": [
+    {
+      "case": "dated_split_dividend_prices_and_shapes",
+      "status": "PASS",
+      "observed": {
+        "split_session": "2020-08-31",
+        "pre_split_raw_reference": 499.23,
+        "split_factor": 4.0,
+        "observed_split_adjusted_close": 124.80750274658203,
+        "dividend_session": "2024-05-10",
+        "dividend": 0.25,
+        "pre_dividend_raw_reference": 184.57,
+        "observed_close": 184.57000732421875,
+        "adj_multiplier_ratio": 0.998645491816687,
+        "expected_dividend_multiplier": 0.9986455004059199,
+        "multi_symbols": [
+          "AAPL",
+          "MSFT"
+        ],
+        "exclusive_end": true
+      }
+    },
+    {
+      "case": "metadata_AAPL",
+      "status": "PASS",
+      "observed": {
+        "symbol": "AAPL",
+        "exchange": "NMS",
+        "timezone": "America/New_York",
+        "currency": "USD",
+        "type": "EQUITY"
+      }
+    },
+    {
+      "case": "metadata_MSFT",
+      "status": "PASS",
+      "observed": {
+        "symbol": "MSFT",
+        "exchange": "NMS",
+        "timezone": "America/New_York",
+        "currency": "USD",
+        "type": "EQUITY"
+      }
+    },
+    {
+      "case": "metadata_SPY",
+      "status": "PASS",
+      "observed": {
+        "symbol": "SPY",
+        "exchange": "PCX",
+        "timezone": "America/New_York",
+        "currency": "USD",
+        "type": "ETF"
+      }
+    }
+  ],
+  "intraday_live_observation": "NOT_PERFORMED; completed-session-only scope per ADR 0004",
+  "sources": {
+    "split_event": "https://www.apple.com/newsroom/2020/07/apple-reports-third-quarter-results/",
+    "split_price": "https://www.firstcitizensgroup.com/tt/news-insights/a-closer-look-at-stock-splits/",
+    "dividend_event": "https://investor.apple.com/dividend-history/default.aspx",
+    "dividend_price": "https://stockinvest.us/stock-news/apple-inc-aapl-shows-bullish-signals-despite-overbought-conditions",
+    "vendor_basis": "https://finance.yahoo.com/quote/AAPL/history/",
+    "dividend_official_announcement": "https://www.apple.com/newsroom/2024/05/apple-reports-second-quarter-results/"
+  }
+}

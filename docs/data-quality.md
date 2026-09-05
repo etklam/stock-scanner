@@ -119,3 +119,27 @@ baseline snapshot 在本次比較時缺失／損壞會保存 BASELINE_SNAPSHOT_U
 
 schema 0002 將 cache 改為 provider + instrument scope，保留並搬入原有 cache；fixture
 不覆蓋 Yahoo，也不能被 Yahoo cache_only 接受。這是來源隔離，並非多租戶 market cache。
+
+## Phase 3.5 — 已完成日線試用
+
+前述 Phase 2 BLOCKED 是歷史結果。目前集中判定為 EOD_TRIAL，版本不符仍 BLOCKED；
+完整證據矩陣、官方事件／價格對照與殘餘風險見 [ADR 0004](adr/0004-eod-trial-acceptance.md)。
+
+Yahoo import 是離線 identity／hint，使用 UNVERIFIED、UNKNOWN currency，無 hint 不猜 NYSE。
+正常 fetch 前核實 Yahoo chart symbol/exchange/currency/timezone/type；不符合則排除，
+不在未知市場上評分。metadata 拒絕亦使舊 cache 不可信；新 hint 與 cached metadata
+矛盾時 cache_only 同樣排除。診斷仍標記 adjustment_review，不能把診斷資料用作評分。
+
+快照與 run 保存當次核實的 Instrument；stable UUID、alias 不變。cache document 附
+verified Instrument，cache_only 只使用歷史已核實身份，沒有即時 lookup 的承諾。
+舊 Yahoo cache 缺 metadata 須完整刷新；舊 snapshots 不變、不改 hash。fixture context
+沿用原 synthetic resolver，不能替 Yahoo 放行。
+
+本次完成 session 實測是 2026-09-04、AAPL/MSFT/SPY，3 evaluated、1 candidate；
+真實 cache_only/replay 一致。假期／DST／early-close／未完成當日、timeout/429、
+增量歷史修訂與 partial failure 是離線 boundary tests；沒有聲稱真實盤中或限流觀察。
+
+報告的結構化 explanations 與 CSV 欄位分開 symbol warnings/reasons、selected-window
+reasons 和全部窗口 gate failures，避免只看 symbol-level reasons 遺失主要原因。
+空 candidate CSV 的 companion summary 保留 state/counts/warnings；SUCCEEDED 零候選、
+PARTIAL、FAILED 零 evaluation 仍是三種不同結果。

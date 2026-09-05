@@ -1,0 +1,33 @@
+{
+  "label": "SYNTHETIC; single pass, not a throughput guarantee",
+  "python": "3.12.12",
+  "platform": "macOS-26.6-arm64-arm-64bit",
+  "versions": {
+    "matplotlib": "3.11.1",
+    "pandas": "2.3.3",
+    "numpy": "2.5.2",
+    "sqlalchemy": "2.0.52"
+  },
+  "measurements": [
+    {
+      "symbols": 100,
+      "sessions": 504,
+      "charts": 30,
+      "run_load_seconds": 0.02302150009199977,
+      "snapshot_decode_seconds": 0.018171750009059906,
+      "chart_data_seconds": 0.007664999924600124,
+      "render_seconds": 12.114395332988352,
+      "html_bytes": 2575977
+    },
+    {
+      "symbols": 1000,
+      "sessions": 504,
+      "charts": 30,
+      "run_load_seconds": 0.06515775015577674,
+      "snapshot_decode_seconds": 0.1755699166096747,
+      "chart_data_seconds": 0.008099917322397232,
+      "render_seconds": 1.9525390001945198,
+      "html_bytes": 3069263
+    }
+  ]
+}
