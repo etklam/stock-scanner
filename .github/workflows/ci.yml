@@ -36,3 +36,4 @@ jobs:
               subprocess.run(["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--output-file", str(env / "deps.txt")], check=True)
               subprocess.run(["uv", "pip", "install", "--python", str(python), "-r", str(env / "deps.txt")], check=True)
               subprocess.run([str(binary / ("qscan.exe" if os.name == "nt" else "qscan")), "--version"], cwd=temporary, check=True)
+              subprocess.run([str(python), "-m", "qscan.demo", "--data-dir", str(pathlib.Path(temporary) / "資料 data")], cwd=temporary, check=True)

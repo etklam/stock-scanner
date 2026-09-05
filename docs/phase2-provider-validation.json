@@ -1,0 +1,91 @@
+{
+  "requested_at": "2026-09-05T10:18:45.437926+00:00",
+  "python": "3.12.10",
+  "os": "Windows-11-10.0.26200-SP0",
+  "versions": {
+    "yfinance": "0.2.66",
+    "pandas": "2.3.3",
+    "numpy": "2.5.2"
+  },
+  "options": {
+    "interval": "1d",
+    "auto_adjust": false,
+    "back_adjust": false,
+    "repair": false,
+    "prepost": false,
+    "actions": true,
+    "threads": false,
+    "progress": false,
+    "timeout": 15,
+    "keepna": true,
+    "group_by": "column",
+    "multi_level_index": true
+  },
+  "checks": [
+    {
+      "case": "split_single",
+      "tickers": [
+        "AAPL"
+      ],
+      "start": "2020-08-28",
+      "end_exclusive": "2020-09-02",
+      "fields": [
+        "Adj Close",
+        "Close",
+        "Dividends",
+        "High",
+        "Low",
+        "Open",
+        "Stock Splits",
+        "Volume"
+      ],
+      "rows": 3,
+      "end_exclusive_pass": true,
+      "split_event_is_four": true,
+      "split_continuity_pass": true,
+      "symbols": {
+        "AAPL": {
+          "close_positive_finite": true,
+          "close_differs_from_adj_close": true
+        }
+      },
+      "status": "PASS"
+    },
+    {
+      "case": "dividend_multi",
+      "tickers": [
+        "AAPL",
+        "MSFT"
+      ],
+      "start": "2024-05-09",
+      "end_exclusive": "2024-05-15",
+      "fields": [
+        "Adj Close",
+        "Close",
+        "Dividends",
+        "High",
+        "Low",
+        "Open",
+        "Stock Splits",
+        "Volume"
+      ],
+      "rows": 4,
+      "end_exclusive_pass": true,
+      "dividend_event_present": true,
+      "symbols": {
+        "AAPL": {
+          "close_positive_finite": true,
+          "close_differs_from_adj_close": true
+        },
+        "MSFT": {
+          "close_positive_finite": true,
+          "close_differs_from_adj_close": true
+        }
+      },
+      "status": "PASS"
+    }
+  ],
+  "incomplete_session": "NOT_VERIFIED: requires an intraday observation and calendar cutoff",
+  "price_basis": "REVIEW_REQUIRED: continuity and differing fields alone do not prove basis",
+  "online_provider_release": "BLOCKED"
+}

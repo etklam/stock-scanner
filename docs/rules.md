@@ -5,7 +5,8 @@
 
 入口為 `qscan.core.analyze_symbol(series, rules, context)`，只接收日期與正數有限 Close。
 呼叫端須先按交易所日曆驗證連續 sessions，再裁切到 `as_of_session`；核心拒絕未來資料，
-缺少目標或 reference session 會輸出資料錯誤。中間缺少交易日的日曆驗證待 Phase 2。
+缺少目標或 reference session 會輸出資料錯誤。Phase 2 application 已加入日曆連續性驗證，
+缺口裁切及 cache 行為見 [data quality](data-quality.md)。
 
 - `t` 是目標 session，`u=t-1`；10／20／40 日窗口全部截止於 `u`。
 - 回報為 `C_u / C_(u-k) - 1`；前段升幅為窗口首日 Close 除以前 63 sessions 最低 Close 減一。
@@ -25,4 +26,5 @@
 動量 18、趨勢 15、結構 25、收窄 13、接近參考線 15。分數不表示成功率。
 
 結果保存 context、config hash、共同及各窗口特徵、分項分數、原因與 unavailable 狀態。
-尚未加入 Yahoo adapter、資料快取、持久化、CLI scan 或 HTTP handlers。
+Phase 2 已加入 fixture／受阻擋的 Yahoo adapter、資料快取及持久化；核心公式未改。
+CLI scan 與 HTTP handlers 仍未實作。

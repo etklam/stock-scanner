@@ -791,11 +791,11 @@ CI 至少有 Windows、macOS、Linux 三個 runner，全部安裝已鎖定依賴
 - [x] 實作 session-indexed features、10／20／40 日窗口及 unavailable feature 語義。
 - [x] 實作 gate、五維 scoring、stage、窗口選擇、reason codes 及穩定排名。
 - [x] 為每個門檻、null、zero denominator、下跌／突破／延伸例子寫測試。
-- [ ] 加 no-lookahead 與 close-only invariance tests。
+- [x] 加 no-lookahead 與 close-only invariance tests。
 - [x] 將公式、參數及限制寫入 `docs/rules.md`，與 fixture expected results 對照。
 
 本機離線核心交付及未完成驗收見 [開發驗收記錄](phase-0-status.md)。no-lookahead 已測；
-close-only 合約拒絕額外欄位已測，完整 provider OHLCV invariance 待 Phase 2 adapter。
+close-only 合約拒絕額外欄位已測，Phase 2 已以單／多 ticker adapter fixtures 完成 OHLCV invariance。
 
 **驗收：** 人手可核對的 synthetic datasets 有固定 expected output；所有公式、stage 邊界及未來資料擾動測試通過。不接受只以真實股票圖片「睇落似」作驗收。
 
@@ -803,12 +803,19 @@ close-only 合約拒絕額外欄位已測，完整 provider OHLCV invariance 待
 
 **目的：** 令一次真實掃描可以查詢、重跑及診斷。
 
-- [ ] 建立 SQLite schema、Alembic migration、repository 及 local principal scope。
-- [ ] 實作 list import、symbol adapter、calendar／as-of resolution、資料品質分流。
+- [x] 建立 SQLite schema、Alembic migration、repository 及 local principal scope。
+- [x] 實作 list import、symbol adapter、calendar／as-of resolution、資料品質分流。
 - [ ] 實作 Yahoo provider、bounded fetch、有限重試、增量交疊及歷史修訂處理。
-- [ ] 加 `auto / cache_only / force`；cache_only 測試保證零網絡。
-- [ ] 保存完整 watchlist／rules／input snapshots、results、hash、counts 及 timings。
-- [ ] 驗證資料 update 與 snapshot／result publication 的交易界線。
+- [x] 加 `auto / cache_only / force`；cache_only 測試保證零網絡。
+- [x] 保存完整 watchlist／rules／input snapshots、results、hash、counts 及 timings。
+- [x] 驗證資料 update 與 snapshot／result publication 的交易界線。
+
+Phase 2 離線持久化流程已實作並有 installed-wheel demo。Yahoo adapter、bounded retry／
+concurrency 及 fixture overlap/full refresh 測試已完成；上列 Yahoo 綜合項仍不勾選，
+因正式來源價格口徑、盤中 incomplete-session 與市場 metadata 尚未驗收。
+2026-09-05 live 機械 probe 兩例通過仍不解除 BLOCKED，詳見
+[Phase 2 驗收紀錄](phase-0-status.md) 與 [data quality](data-quality.md)。
+同步服務不包含第 9 節的 HTTP queue／startup recovery，不代表 Phase 3/4 或 V1 完成。
 
 **驗收：** 同一 snapshot 可離線重現；單一下載失敗不終止其他 symbol；拆股／修訂 fixture 不產生拼接口徑；沒有資料與沒有 setup 分得清。
 
