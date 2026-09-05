@@ -36,7 +36,8 @@ class ExportFormat(StrEnum):
 def emit(value: Any) -> None:
     if hasattr(value, "model_dump"):
         value = value.model_dump(mode="json")
-    typer.echo(json.dumps(value, ensure_ascii=False, allow_nan=False, indent=2))
+    # ASCII-escaped JSON is valid UTF-8 and survives legacy Windows redirected stdout.
+    typer.echo(json.dumps(value, ensure_ascii=True, allow_nan=False, indent=2))
 
 
 class CommandGroup(TyperGroup):

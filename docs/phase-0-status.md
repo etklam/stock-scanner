@@ -203,3 +203,16 @@ null/None、PARTIAL、SUCCEEDED 零候選、chart error：文字換行、状态�
 真實盤中來源觀察、公開產品行情授權／SLA、kill-process recovery、backup/restore 演練、
 完整 API/auth/idempotency/queue、跨平台原生 GUI 視覺驗收。Phase 4 的前置共用服務已穩定，
 仍需本輪三平台 CI 通過才將此 milestone 標作跨平台完成；不代表 API 已存在。
+
+### 本輪首個 CI 發現的第二處 Windows encoding 問題
+
+[Run 33967148443](https://github.com/etklam/stock-scanner/actions/runs/33967148443)，
+head `2f31bec11d7fe90efd43379c5fd7133e63a85b81`：三平台 pytest 與 build 通過，
+Ubuntu/macOS wheel smoke 通過，Windows installed-wheel report JSON 命令 exit 2。
+它是前輪 Windows pytest 失敗後從未執行到的步驟，不以本機 smoke 取代驗收。
+
+在 subprocess 強制 cp1252 stdout 的最小 regression 成功重現 UnicodeEncodeError：
+report 已產生 UTF-8 檔案，但 `emit` 向舊 codepage pipe 輸出含中文的 output path 失敗。
+修正 CLI JSON 為標準 ASCII Unicode escapes（仍是合法 UTF-8 JSON，decode 後字串完全相同）；
+報告檔案保持 UTF-8／CSV BOM，沒有設定全域 UTF-8 mode。測試刻意用非 UTF-8 codepage
+證明適用，未 skip Windows。wheel smoke 現在亦在失敗時列出被捕捉的 stdout/stderr。

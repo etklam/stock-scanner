@@ -45,11 +45,12 @@ def main() -> None:
             result = subprocess.run(
                 [str(executable), "--data-dir", str(data_dir), "--provider", "fixture", *args],
                 cwd=directory,
-                check=True,
+                check=False,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
             )
+            assert result.returncode == 0, (args, result.stdout, result.stderr)
             return json.loads(result.stdout)
 
         invoke("init")

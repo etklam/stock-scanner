@@ -292,3 +292,25 @@ def test_unknown_rules_major_is_historical_only(setup):
     assert app.reports.build(old.id).charts
     with pytest.raises(ApplicationError, match="compatible rules"):
         app.scans.replay(old.id)
+
+
+def test_json_stdout_is_utf8_decodable_on_legacy_codepage():
+    import json
+    import os
+    import subprocess
+    import sys
+
+    value = {"output": "中文 path/報告.json", "warning": "測試"}
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import json, sys; from qscan.interfaces.cli import emit; "
+            "emit(json.loads(sys.argv[1]))",
+            json.dumps(value),
+        ],
+        env={**os.environ, "PYTHONIOENCODING": "cp1252"},
+        capture_output=True,
+    )
+    assert result.returncode == 0, result.stderr.decode("ascii", errors="replace")
+    assert json.loads(result.stdout.decode("utf-8")) == value

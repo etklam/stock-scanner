@@ -156,3 +156,7 @@ uv run python scripts/live_cli_smoke.py --data-dir /tmp/qscan-live-new --as-of 2
 
 第一個 script 是證據收集，不能自行解除 gate。第二個逐步呼叫真正 CLI，只有摘要／hash
 写入指定 output，行情只在 data-dir。實際安裝、UI 與 CI 證據見 [驗收紀錄](phase-0-status.md)。
+
+CLI JSON stdout 使用標準 Unicode escapes，讓 Windows 舊 codepage 的重導向 pipe 也可
+由 UTF-8 JSON reader 無損解析。這只改 JSON 序列化，未改系統／Python encoding mode；
+JSON/HTML 檔案仍 UTF-8，CSV 仍 UTF-8 BOM。
