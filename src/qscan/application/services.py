@@ -4,11 +4,10 @@ import csv
 import io
 import math
 import re
+from collections.abc import Callable, Sequence
 from datetime import UTC, date, timedelta
 from time import perf_counter
 from uuid import UUID, uuid4
-
-from filelock import FileLock
 
 from qscan import __version__
 from qscan.application.contracts import (
@@ -20,6 +19,7 @@ from qscan.application.contracts import (
     InputItem,
     InputSnapshot,
     Instrument,
+    Progress,
     Provenance,
     Provider,
     RawPrices,
@@ -28,6 +28,7 @@ from qscan.application.contracts import (
     Repository,
     Run,
     ScanResult,
+    ServiceLock,
     Snapshots,
     Watchlist,
 )
@@ -39,8 +40,10 @@ from qscan.domain.rules import RuleConfig
 
 
 class WatchlistService:
-    def __init__(self, repository: Repository, provider: Provider, lock: FileLock) -> None:
-        self.repository, self.provider, self.lock = repository, provider, lock
+    def __init__(self, repository: Repository, provider: Provider) -> None:
+        # Watchlist writes are short SQLite CAS transactions; they hold no executor lock
+        # so API edits never wait for a running scan.
+        self.repository, self.provider = repository, provider
 
     def list(self) -> tuple[Watchlist, ...]:
         return self.repository.watchlists()
@@ -57,6 +60,29 @@ class WatchlistService:
                 ) from None
             return matches[0]
         return self.repository.watchlist(identity)
+
+    def create(self, name: str, symbols: Sequence[str]) -> Watchlist:
+        """Bounded offline creation from an explicit symbol sequence."""
+        if not 1 <= len(symbols) <= 2000:
+            raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Watchlist requires 1..2000 symbols")
+        content = "\n".join(symbols).encode("utf-8")
+        return self.import_content(name, content, "txt")
+
+    def rename(self, identity: UUID, name: str, expected_revision: int) -> Watchlist:
+        current = self.repository.watchlist(identity)
+        if current.revision != expected_revision:
+            raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT)
+        value = Watchlist(
+            id=identity,
+            name=name,
+            revision=expected_revision + 1,
+            instruments=current.instruments,
+        )
+        self.repository.save_watchlist(value, expected_revision)
+        return value
+
+    def delete(self, identity: UUID) -> None:
+        self.repository.delete_watchlist(identity)
 
     def import_named(
         self,
@@ -137,20 +163,20 @@ class WatchlistService:
                 instruments.setdefault(instrument.id, instrument)
                 if len(instruments) > 2000:
                     raise ValueError("Watchlist exceeds 2000 symbols")
-            with self.lock:
-                if watchlist_id is not None:
-                    old = self.repository.watchlist(watchlist_id)
-                    if old.revision != expected_revision:
-                        raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT)
-                elif expected_revision is not None:
-                    raise ValueError("Revision requires a watchlist")
-                value = Watchlist(
-                    id=watchlist_id or uuid4(),
-                    name=name,
-                    revision=(expected_revision or 0) + 1,
-                    instruments=tuple(instruments.values()),
-                )
-                self.repository.save_watchlist(value, expected_revision)
+            if watchlist_id is not None:
+                old = self.repository.watchlist(watchlist_id)
+                if old.revision != expected_revision:
+                    raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT)
+            elif expected_revision is not None:
+                raise ValueError("Revision requires a watchlist")
+            value = Watchlist(
+                id=watchlist_id or uuid4(),
+                name=name,
+                revision=(expected_revision or 0) + 1,
+                instruments=tuple(instruments.values()),
+            )
+            # save_watchlist re-checks the revision in the UPDATE WHERE; no lock needed.
+            self.repository.save_watchlist(value, expected_revision)
             return value
         except (ValueError, UnicodeError, csv.Error) as exc:
             raise ApplicationError(ErrorCode.VALIDATION_ERROR, str(exc)) from exc
@@ -162,7 +188,7 @@ class MarketDataService:
         repository: Repository,
         provider: Provider,
         clock: Clock,
-        lock: FileLock,
+        lock: ServiceLock,
         review_interval: timedelta = timedelta(days=30),
     ) -> None:
         if review_interval <= timedelta(0):
@@ -392,6 +418,13 @@ class ScanQueryService:
             raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Limit must be 1..200")
         return self.repository.summaries(limit)
 
+    def page(
+        self, *, after: tuple[str, str] | None = None, limit: int = 50, state: str | None = None
+    ) -> tuple[tuple[Run, ...], bool]:
+        if not 1 <= limit <= 200:
+            raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Limit must be 1..200")
+        return self.repository.runs_page(after=after, limit=limit, state=state)
+
 
 class ScanService:
     def __init__(
@@ -401,10 +434,129 @@ class ScanService:
         calendar: Calendar,
         clock: Clock,
         snapshots: Snapshots,
-        lock: FileLock,
+        lock: ServiceLock,
     ) -> None:
         self.repository, self.market, self.calendar = repository, market, calendar
         self.clock, self.snapshots, self.lock = clock, snapshots, lock
+
+    def prepare(
+        self,
+        watchlist_id: UUID,
+        *,
+        as_of: date | None = None,
+        rules: RuleConfig | None = None,
+        mode: DataMode = DataMode.AUTO,
+    ) -> Run:
+        """Build a QUEUED run fixing watchlist, sessions, rules, and data mode.
+
+        No market data is fetched and nothing is persisted here; the transport
+        persists via repository.enqueue (API) or create_run (CLI). Later watchlist
+        edits cannot change the accepted job: the full member list is embedded.
+        """
+        watchlist = self.repository.watchlist(watchlist_id)
+        context = self.calendar.resolve(as_of, self.clock.now())
+        config = rules or RuleConfig()
+        run = Run(
+            id=uuid4(),
+            state=RunState.QUEUED,
+            context=context,
+            watchlist=watchlist,
+            rules=config,
+            config_hash=config.config_hash(),
+            data_mode=mode,
+            requested_at=self.clock.now().astimezone(UTC),
+            counts=Counts(requested=len(watchlist.instruments)),
+        )
+        return run
+
+    def execute_existing(
+        self, identity: UUID, *, should_stop: Callable[[], bool] | None = None
+    ) -> Run | None:
+        """Claim and execute an already-persisted QUEUED run; publish under the same id.
+
+        Returns None when the run is not QUEUED anymore (already claimed, terminal,
+        or stopped cooperatively before the claim).
+        """
+        run = self.repository.run_summary(identity)
+        if run.state != RunState.QUEUED:
+            return None
+        expected = self.calendar.sessions(
+            run.context.as_of_session - timedelta(days=1100), run.context.as_of_session
+        )[-504:]
+        now = self.clock.now().astimezone(UTC)
+        total = len(run.watchlist.instruments)
+        claimed = run.model_copy(
+            update={
+                "state": RunState.RUNNING,
+                "started_at": now,
+                "progress": Progress(
+                    phase="market_data", processed_symbols=0, total_symbols=total, updated_at=now
+                ),
+            }
+        )
+        if not self.repository.claim(claimed):
+            return None
+        # The daily baseline is fixed when the job actually starts, never at query time.
+        from qscan.application.reporting import ComparisonService
+
+        claimed = claimed.model_copy(
+            update={"comparison": ComparisonService(self.repository, self.snapshots).bind(claimed)}
+        )
+        started = perf_counter()
+        try:
+            items = []
+            for index, instrument in enumerate(claimed.watchlist.instruments):
+                if should_stop is not None and should_stop():
+                    self.repository.fail(
+                        claimed.model_copy(
+                            update={
+                                "state": RunState.FAILED,
+                                "finished_at": self.clock.now().astimezone(UTC),
+                                "error": ErrorCode.WORKER_INTERRUPTED,
+                                "progress": None,
+                                "counts": Counts(requested=total, data_error=total),
+                            }
+                        )
+                    )
+                    return None
+                items.append(self.market.obtain(instrument, expected, claimed.data_mode))
+                self.repository.update_progress(
+                    identity,
+                    Progress(
+                        phase="market_data",
+                        processed_symbols=index + 1,
+                        total_symbols=total,
+                        updated_at=self.clock.now().astimezone(UTC),
+                    ),
+                )
+            items_tuple = tuple(items)
+            watchlist = claimed.watchlist.model_copy(
+                update={"instruments": tuple(i.instrument for i in items_tuple)}
+            )
+            claimed = claimed.model_copy(update={"watchlist": watchlist})
+            snapshot = InputSnapshot(
+                context=claimed.context,
+                rules=claimed.rules,
+                watchlist=watchlist,
+                calendar_version=self.calendar.version,
+                expected_sessions=expected,
+                items=items_tuple,
+            )
+            self.repository.update_progress(
+                identity,
+                Progress(
+                    phase="analysis",
+                    processed_symbols=total,
+                    total_symbols=total,
+                    updated_at=self.clock.now().astimezone(UTC),
+                ),
+            )
+            return self._complete(
+                claimed, snapshot, {"market_validation": perf_counter() - started}
+            )
+        except Exception:
+            self._failed(claimed)
+            raise
 
     def scan(
         self,
@@ -414,54 +566,13 @@ class ScanService:
         rules: RuleConfig | None = None,
         mode: DataMode = DataMode.AUTO,
     ) -> Run:
+        """Synchronous CLI path: persist then execute the same run inline."""
         with self.lock:
-            watchlist = self.repository.watchlist(watchlist_id)
-            context = self.calendar.resolve(as_of, self.clock.now())
-            expected = self.calendar.sessions(
-                context.as_of_session - timedelta(days=1100), context.as_of_session
-            )[-504:]
-            now = self.clock.now().astimezone(UTC)
-            config = rules or RuleConfig()
-            run = Run(
-                id=uuid4(),
-                state=RunState.RUNNING,
-                context=context,
-                watchlist=watchlist,
-                rules=config,
-                config_hash=config.config_hash(),
-                requested_at=now,
-                started_at=now,
-                counts=Counts(
-                    requested=len(watchlist.instruments), data_error=len(watchlist.instruments)
-                ),
-            )
-            from qscan.application.reporting import ComparisonService
-
-            run = run.model_copy(
-                update={"comparison": ComparisonService(self.repository, self.snapshots).bind(run)}
-            )
+            run = self.prepare(watchlist_id, as_of=as_of, rules=rules, mode=mode)
             self.repository.create_run(run)
-            started = perf_counter()
-            try:
-                items = tuple(self.market.obtain(i, expected, mode) for i in watchlist.instruments)
-                watchlist = watchlist.model_copy(
-                    update={"instruments": tuple(i.instrument for i in items)}
-                )
-                run = run.model_copy(update={"watchlist": watchlist})
-                snapshot = InputSnapshot(
-                    context=context,
-                    rules=config,
-                    watchlist=watchlist,
-                    calendar_version=self.calendar.version,
-                    expected_sessions=expected,
-                    items=items,
-                )
-                return self._complete(
-                    run, snapshot, {"market_validation": perf_counter() - started}
-                )
-            except Exception:
-                self._failed(run)
-                raise
+            result = self.execute_existing(run.id)
+            assert result is not None, "Freshly submitted run must be claimable"
+            return result
 
     def replay(self, source_id: UUID) -> Run:
         with self.lock:
@@ -495,7 +606,7 @@ class ScanService:
                 source_run_id=source_id,
                 requested_at=now,
                 started_at=now,
-                counts=Counts(requested=len(snapshot.items), data_error=len(snapshot.items)),
+                counts=Counts(requested=len(snapshot.items)),
             )
             self.repository.create_run(run)
             try:
@@ -511,6 +622,10 @@ class ScanService:
                     "state": RunState.FAILED,
                     "finished_at": self.clock.now().astimezone(UTC),
                     "error": ErrorCode.SCAN_FAILED,
+                    "progress": None,
+                    "counts": Counts(
+                        requested=run.counts.requested, data_error=run.counts.requested
+                    ),
                 }
             )
         )
@@ -568,11 +683,17 @@ class ScanService:
             if not evaluated
             else (RunState.PARTIAL if data_error else RunState.SUCCEEDED)
         )
+        warnings: set[str] = set()
+        for result in output:
+            warnings.update(result.warnings)
+            if result.provenance is not None:
+                warnings.update(result.provenance.warnings)
         completed = run.model_copy(
             update={
                 "input_hash": digest,
                 "state": state,
                 "finished_at": self.clock.now().astimezone(UTC),
+                "progress": None,
                 "timings": timings,
                 "counts": Counts(
                     requested=len(output),
@@ -581,6 +702,7 @@ class ScanService:
                     data_error=data_error,
                     candidate=len(ranks),
                 ),
+                "warnings": tuple(sorted(warnings)),
                 "results": tuple(output),
             }
         )

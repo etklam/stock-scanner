@@ -4,6 +4,7 @@ import os
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
+from typing import cast
 
 from filelock import FileLock
 from platformdirs import user_data_path
@@ -11,6 +12,7 @@ from sqlalchemy import Engine, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from qscan.adapters.calendar import NYSECalendar, SystemClock
+from qscan.adapters.persistence.migrations import HEAD
 from qscan.adapters.persistence.repository import SQLiteRepository, migrate, open_database
 from qscan.adapters.snapshots import SnapshotStore
 from qscan.application.contracts import (
@@ -19,6 +21,7 @@ from qscan.application.contracts import (
     Calendar,
     Clock,
     Provider,
+    ServiceLock,
 )
 from qscan.application.reporting import ComparisonService, ReportService
 from qscan.application.services import (
@@ -42,9 +45,41 @@ class Application:
     queries: ScanQueryService
     reports: ReportService
     comparisons: ComparisonService
+    provider: Provider
+    calendar: Calendar
+    clock: Clock
+    lock: ServiceLock
 
     def close(self) -> None:
         self.engine.dispose()
+
+    def for_principal(self, principal: str) -> "Application":
+        """Owner-scoped view sharing engine, snapshots, locks, provider and clock.
+
+        Market/cache operations are owner independent, so the market service (and its
+        repository) stays shared; only owner-filtered services are rebuilt.
+        """
+        if principal == self.repository.context.principal:
+            return self
+        repository = self.repository.for_principal(principal)
+        return Application(
+            data_dir=self.data_dir,
+            engine=self.engine,
+            repository=repository,
+            snapshots=self.snapshots,
+            watchlists=WatchlistService(repository, self.provider),
+            market=self.market,
+            scans=ScanService(
+                repository, self.market, self.calendar, self.clock, self.snapshots, self.lock
+            ),
+            queries=ScanQueryService(repository),
+            reports=ReportService(repository, self.snapshots),
+            comparisons=ComparisonService(repository, self.snapshots),
+            provider=self.provider,
+            calendar=self.calendar,
+            clock=self.clock,
+            lock=self.lock,
+        )
 
 
 def bootstrap(
@@ -57,7 +92,14 @@ def bootstrap(
     review_interval: timedelta = timedelta(days=30),
     initialize: bool = True,
     readonly: bool = False,
+    service_lock: ServiceLock | None = None,
 ) -> Application:
+    """service_lock replaces the per-operation executor FileLock for services.
+
+    serve passes a NullLock: it already owns the directory exclusively for its whole
+    lifetime, and services re-acquiring that file from other threads would deadlock.
+    Migration keeps using the real file lock regardless.
+    """
     try:
         directory = resolve_data_dir(data_dir)
     except ApplicationError as exc:
@@ -66,18 +108,20 @@ def bootstrap(
         directory.mkdir(parents=True, exist_ok=True)
     elif not (directory / "qscan.sqlite3").is_file():
         raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Not initialized; run qscan init")
-    lock = FileLock(directory / "executor.lock", timeout=10)
+    maintenance = FileLock(directory / "executor.lock", timeout=10)
+    # filelock's concrete __exit__ types never satisfy a protocol exactly; cast once here.
+    lock = cast(ServiceLock, service_lock or maintenance)
     clock = clock or SystemClock()
     calendar = calendar or NYSECalendar()
     if initialize:
-        with lock:
+        with maintenance:
             engine = open_database(directory / "qscan.sqlite3")
             migrate(engine)
     else:
         engine = open_database(directory / "qscan.sqlite3", readonly=readonly)
         try:
             with engine.connect() as connection:
-                if connection.scalar(text("SELECT version_num FROM alembic_version")) != "0002":
+                if connection.scalar(text("SELECT version_num FROM alembic_version")) != HEAD:
                     raise ApplicationError(
                         ErrorCode.VALIDATION_ERROR, "Incompatible schema; run qscan init to upgrade"
                     )
@@ -97,12 +141,16 @@ def bootstrap(
         engine,
         repository,
         snapshots,
-        WatchlistService(repository, provider, lock),
+        WatchlistService(repository, provider),
         market,
         ScanService(repository, market, calendar, clock, snapshots, lock),
         ScanQueryService(repository),
         ReportService(repository, snapshots),
         ComparisonService(repository, snapshots),
+        provider,
+        calendar,
+        clock,
+        lock,
     )
 
 

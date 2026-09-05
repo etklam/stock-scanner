@@ -1,10 +1,10 @@
 # Close-only Setup Scanner
 
-**Phase 3.5 CLI / EOD 個人試用**：匯入名單、同步掃描、歷史查詢、固定 baseline 每日比較、
-JSON／CSV／離線 HTML 報告，以及 immutable snapshot replay。無需寫 Python 或啟動 server。
+**CLI + 本地 HTTP API**：匯入名單、同步（CLI）或佇列（API）掃描、歷史查詢、
+固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、immutable snapshot replay。
 鎖定依賴下 Yahoo 為 **EOD_TRIAL**：可掃描已完成交易日、metadata 已驗證的美股／ETF。
 真實三標的流程已通過；盤中與 production 行情未放行，見 [驗收決定](docs/adr/0004-eod-trial-acceptance.md)。
-規則與階段邊界見 [開發計劃](docs/development-plan.md)。
+規則與階段邊界見 [開發計劃](docs/development-plan.md)，API 合約見 [api.md](docs/api.md)。
 
 ## 安裝
 
@@ -140,6 +140,43 @@ JSON stdout 只有一份合法 JSON；warnings／progress 在 stderr，錯誤有
 replay 拒絕；不以最新 cache 補圖。比較條件與 legacy run 限制見
 [data quality](docs/data-quality.md)，診斷與備份見 [operations](docs/operations.md)。
 
+## C. 本地 HTTP API（Phase 4）
+
+未來 App 或一般 HTTP client 走同一套 application services：
+
+```sh
+export QSCAN_DATA_DIR="$HOME/qscan-personal"
+uv run qscan init                 # 建立資料目錄與高熵 API token（重跑不換 token）
+uv run qscan serve                # 預設 127.0.0.1:8000；--port/--queue-limit 可調
+```
+
+另開終端，用純 HTTP client 完成整條流程（不 import 核心、不碰 SQLite）：
+
+```sh
+uv run python scripts/http_client_example.py   --base-url http://127.0.0.1:8000 --data-dir "$QSCAN_DATA_DIR"   --symbols AAPL MSFT --as-of 2026-09-04
+```
+
+client 會：建名單 → 以 `Idempotency-Key` 提交（202 + Location）→ 有界輪詢
+（phase/progress）→ 讀 results／detail／series／changes → 匯出 CSV；
+處理 PARTIAL／FAILED／429，重試沿用同一 key。手動呼叫範例：
+
+```sh
+TOKEN=$(python -c "import json,os;print(json.load(open(os.path.expanduser('~/qscan-personal/api-token.json')))['token'])")
+curl -s http://127.0.0.1:8000/health/ready
+curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: 3f56af32-5f96-4ff1-9d44-0f02be7a1a94"   -H "Content-Type: application/json"   -d '{"watchlist_id":"<uuid>","as_of_session":"2026-09-04","data_mode":"auto"}'   http://127.0.0.1:8000/api/v1/scans -i
+```
+
+安全與語義：只綁 loopback；所有 `/api/v1/*` 需 bearer token；Origin 一律拒絕
+（無 CORS）、Host 限 localhost；watchlist/run/result 全部 owner-scoped。
+`qscan token-rotate` 明確輪換（即時生效，principal 不變）。
+冪等：同 key 同請求回原任務（重試 200 顯示真實狀態）、不同請求 409；
+QUEUED 上限 20（429 `QUEUE_LIMIT_REACHED`）；強制 kill 後重啟由 startup recovery
+把遺留 RUNNING 標 `FAILED/WORKER_INTERRUPTED`、QUEUED 繼續完成。
+`qscan serve` 運行時，同一資料目錄的 CLI scan/refresh/init 會如實回報
+executor busy（exit 4）；read-only 查詢／報告不受影響。完整合約與錯誤碼見
+[api.md](docs/api.md) 與 [openapi.json](docs/openapi.json)；
+鎖／recovery 營運細節見 [operations](docs/operations.md)。
+
 ## 驗證與開發入口
 
 ```sh
@@ -153,7 +190,8 @@ uv run python scripts/wheel_smoke.py
 ```
 
 共用服務由 `qscan.bootstrap.bootstrap` 組裝；`watchlists`、`market`、`scans`、`queries`、
-`reports`、`comparisons` 可供未來 API 重用。HTTP server、serve、背景 queue、登入／token、
-crash recovery 均未實作。Phase 2 Python demo 保留作歷史驗收入口。
+`reports`、`comparisons` 由 CLI 與 HTTP API 共用，`scans.prepare`／`execute_existing`
+是提交與執行的單一路徑。Phase 2 Python demo 保留作歷史驗收入口。
+OpenAPI snapshot 以 `uv run python scripts/openapi_snapshot.py --check` 驗證。
 
 本工具是 close-only 初篩，流動性及日內形態未評估，不提供下單或績效回測。

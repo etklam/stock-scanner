@@ -1,5 +1,6 @@
 """Owner-scoped repositories; every operation owns a short-lived connection."""
 
+import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date
@@ -9,7 +10,19 @@ from uuid import UUID
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import URL, Connection, Engine, create_engine, delete, event, insert, select, update
+from sqlalchemy import (
+    URL,
+    Connection,
+    Engine,
+    create_engine,
+    delete,
+    event,
+    func,
+    insert,
+    or_,
+    select,
+    update,
+)
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.exc import IntegrityError
 
@@ -17,16 +30,17 @@ from qscan.adapters.persistence.migrations.schema_v1 import (
     instruments,
     members,
     results,
-    runs,
     watchlists,
 )
 from qscan.adapters.persistence.migrations.schema_v2 import cache, prices
+from qscan.adapters.persistence.migrations.schema_v3 import runs
 from qscan.application.contracts import (
     ApplicationContext,
     ApplicationError,
     CacheEntry,
     Clock,
     Instrument,
+    Progress,
     Provenance,
     Run,
     ScanResult,
@@ -73,6 +87,14 @@ class SQLiteRepository:
         self.engine, self.context, self.clock = engine, context, clock
         self.provider = provider
 
+    def for_principal(self, principal: str) -> "SQLiteRepository":
+        """Same engine/clock; ownership only decides row visibility."""
+        if principal == self.context.principal:
+            return self
+        return SQLiteRepository(
+            self.engine, ApplicationContext(principal), self.clock, self.provider
+        )
+
     @contextmanager
     def _read(self) -> Iterator[Connection]:
         # sqlite3 legacy mode does not BEGIN for SELECT, even inside engine.begin().
@@ -80,6 +102,19 @@ class SQLiteRepository:
         with self.engine.connect() as connection:
             connection.exec_driver_sql("BEGIN")
             yield connection
+
+    @contextmanager
+    def _write(self) -> Iterator[Connection]:
+        # BEGIN IMMEDIATE takes the SQLite write lock up front: concurrent capacity
+        # checks and key reservations serialize instead of racing to upgrade.
+        with self.engine.connect() as connection:
+            connection.exec_driver_sql("BEGIN IMMEDIATE")
+            try:
+                yield connection
+            except BaseException:
+                connection.rollback()
+                raise
+            connection.commit()
 
     def _instrument(self, connection: Connection, value: Instrument) -> None:
         connection.execute(
@@ -174,6 +209,34 @@ class SQLiteRepository:
                 .all()
             )
         return tuple(self.watchlist(UUID(i)) for i in identities)
+
+    def delete_watchlist(self, identity: UUID) -> None:
+        with self._write() as connection:
+            existing = connection.execute(
+                select(watchlists.c.id).where(
+                    watchlists.c.id == str(identity),
+                    watchlists.c.owner_id == self.context.principal,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                raise ApplicationError(ErrorCode.NOT_FOUND)
+            active = connection.execute(
+                select(runs.c.id)
+                .where(
+                    runs.c.state.in_([RunState.QUEUED.value, RunState.RUNNING.value]),
+                    func.json_extract(runs.c.document, "$.watchlist.id") == str(identity),
+                )
+                .limit(1)
+            ).scalar_one_or_none()
+            if active is not None:
+                raise ApplicationError(ErrorCode.WATCHLIST_IN_USE)
+            connection.execute(delete(members).where(members.c.watchlist_id == str(identity)))
+            connection.execute(
+                delete(watchlists).where(
+                    watchlists.c.id == str(identity),
+                    watchlists.c.owner_id == self.context.principal,
+                )
+            )
 
     def cache(self, instrument: Instrument) -> CacheEntry | None:
         with self._read() as connection:
@@ -280,9 +343,254 @@ class SQLiteRepository:
                     state=run.state.value,
                     created_at=run.requested_at.isoformat(),
                     source_run_id=str(run.source_run_id) if run.source_run_id else None,
+                    idempotency_key=None,
+                    request_hash=None,
                     document=run.model_dump(mode="json", exclude={"results"}),
                 )
             )
+
+    def enqueue(
+        self, run: Run, idempotency_key: str, request_hash: str, queue_limit: int
+    ) -> tuple[bool, tuple[UUID, str] | None]:
+        """Reserve the key, check capacity, and insert the QUEUED run in one transaction."""
+        try:
+            with self._write() as connection:
+                existing = connection.execute(
+                    select(runs.c.id, runs.c.request_hash).where(
+                        runs.c.owner_id == self.context.principal,
+                        runs.c.idempotency_key == idempotency_key,
+                    )
+                ).first()
+                if existing is not None:
+                    return False, (UUID(existing.id), existing.request_hash or "")
+                queued = connection.scalar(
+                    select(func.count())
+                    .select_from(runs)
+                    .where(
+                        runs.c.owner_id == self.context.principal,
+                        runs.c.state == RunState.QUEUED.value,
+                    )
+                )
+                if queued is not None and queued >= queue_limit:
+                    raise ApplicationError(
+                        ErrorCode.QUEUE_LIMIT_REACHED,
+                        "Queued scan limit reached; wait for running scans to finish",
+                    )
+                connection.execute(
+                    insert(runs).values(
+                        id=str(run.id),
+                        owner_id=self.context.principal,
+                        state=run.state.value,
+                        created_at=run.requested_at.isoformat(),
+                        source_run_id=None,
+                        idempotency_key=idempotency_key,
+                        request_hash=request_hash,
+                        document=run.model_dump(mode="json", exclude={"results"}),
+                    )
+                )
+                return True, None
+        except IntegrityError as exc:
+            # Concurrent insert of the same key: report the winner instead of guessing.
+            with self._read() as connection:
+                existing = connection.execute(
+                    select(runs.c.id, runs.c.request_hash).where(
+                        runs.c.owner_id == self.context.principal,
+                        runs.c.idempotency_key == idempotency_key,
+                    )
+                ).first()
+            if existing is None:
+                raise ApplicationError(ErrorCode.INTERNAL_ERROR, "Queue insert conflict") from exc
+            return False, (UUID(existing.id), existing.request_hash or "")
+
+    def claim(self, run: Run) -> bool:
+        """QUEUED -> RUNNING compare-and-set; only one executor can win."""
+        with self.engine.begin() as connection:
+            changed = connection.execute(
+                update(runs)
+                .where(
+                    runs.c.id == str(run.id),
+                    runs.c.owner_id == self.context.principal,
+                    runs.c.state == RunState.QUEUED.value,
+                )
+                .values(
+                    state=run.state.value,
+                    document=run.model_dump(mode="json", exclude={"results"}),
+                )
+            )
+            return changed.rowcount == 1
+
+    def update_progress(self, identity: UUID, progress: Progress) -> None:
+        """Live progress only; never touches a terminal run."""
+        with self.engine.begin() as connection:
+            document = connection.execute(
+                select(runs.c.document).where(
+                    runs.c.id == str(identity),
+                    runs.c.owner_id == self.context.principal,
+                    runs.c.state == RunState.RUNNING.value,
+                )
+            ).scalar_one_or_none()
+            if document is None:
+                return
+            run = Run.model_validate(document)
+            connection.execute(
+                update(runs)
+                .where(
+                    runs.c.id == str(identity),
+                    runs.c.owner_id == self.context.principal,
+                    runs.c.state == RunState.RUNNING.value,
+                )
+                .values(
+                    document=run.model_copy(update={"progress": progress}).model_dump(
+                        mode="json", exclude={"results"}
+                    )
+                )
+            )
+
+    def next_queued(self) -> UUID | None:
+        """Stable FIFO (created_at, id) across all owners in this data directory."""
+        with self._read() as connection:
+            identity = connection.execute(
+                select(runs.c.id)
+                .where(runs.c.state == RunState.QUEUED.value)
+                .order_by(runs.c.created_at.asc(), runs.c.id.asc())
+                .limit(1)
+            ).scalar_one_or_none()
+            return UUID(identity) if identity else None
+
+    def run_owner(self, identity: UUID) -> str | None:
+        with self._read() as connection:
+            return connection.execute(
+                select(runs.c.owner_id).where(runs.c.id == str(identity))
+            ).scalar_one_or_none()
+
+    def run_by_idempotency(self, key: str) -> tuple[UUID, str] | None:
+        with self._read() as connection:
+            row = connection.execute(
+                select(runs.c.id, runs.c.request_hash).where(
+                    runs.c.owner_id == self.context.principal,
+                    runs.c.idempotency_key == key,
+                )
+            ).first()
+            return (UUID(row.id), row.request_hash or "") if row else None
+
+    def recover_interrupted(self) -> int:
+        """Mark leftover RUNNING rows FAILED/WORKER_INTERRUPTED; done runs are untouched."""
+        recovered = 0
+        with self._write() as connection:
+            rows = connection.execute(
+                select(runs.c.id, runs.c.document).where(runs.c.state == RunState.RUNNING.value)
+            ).mappings()
+            for row in rows:
+                try:
+                    run = Run.model_validate(row["document"])
+                except ValueError:
+                    run = None
+                document = (
+                    run.model_copy(
+                        update={
+                            "state": RunState.FAILED,
+                            "finished_at": self.clock.now().astimezone(UTC),
+                            "error": ErrorCode.WORKER_INTERRUPTED,
+                        }
+                    ).model_dump(mode="json", exclude={"results"})
+                    if run
+                    else json.dumps({"state": "FAILED", "error": "WORKER_INTERRUPTED"})
+                )
+                changed = connection.execute(
+                    update(runs)
+                    .where(runs.c.id == row["id"], runs.c.state == RunState.RUNNING.value)
+                    .values(state=RunState.FAILED.value, document=document)
+                )
+                recovered += changed.rowcount
+        return recovered
+
+    def runs_page(
+        self, *, after: tuple[str, str] | None, limit: int, state: str | None
+    ) -> tuple[tuple[Run, ...], bool]:
+        conditions = [runs.c.owner_id == self.context.principal]
+        if state is not None:
+            conditions.append(runs.c.state == state)
+        if after is not None:
+            conditions.append(
+                or_(
+                    runs.c.created_at < after[0],
+                    (runs.c.created_at == after[0]) & (runs.c.id < after[1]),
+                )
+            )
+        with self._read() as connection:
+            documents = (
+                connection.execute(
+                    select(runs.c.document)
+                    .where(*conditions)
+                    .order_by(runs.c.created_at.desc(), runs.c.id.desc())
+                    .limit(limit + 1)
+                )
+                .scalars()
+                .all()
+            )
+        more = len(documents) > limit
+        return tuple(Run.model_validate(d) for d in documents[:limit]), more
+
+    def run_summary(self, identity: UUID) -> Run:
+        with self._read() as connection:
+            document = connection.execute(
+                select(runs.c.document).where(
+                    runs.c.id == str(identity),
+                    runs.c.owner_id == self.context.principal,
+                )
+            ).scalar_one_or_none()
+            if document is None:
+                raise ApplicationError(ErrorCode.NOT_FOUND)
+            return Run.model_validate(document)
+
+    def results_page(
+        self,
+        identity: UUID,
+        *,
+        after: tuple[int, int | None, str] | None,
+        limit: int,
+        stage: str | None,
+        candidate: bool | None,
+    ) -> tuple[tuple[ScanResult, ...], bool]:
+        null_score = results.c.score.is_(None)
+        conditions = [
+            runs.c.id == str(identity),
+            runs.c.owner_id == self.context.principal,
+            results.c.run_id == runs.c.id,
+        ]
+        if stage is not None:
+            conditions.append(func.json_extract(results.c.document, "$.analysis.stage") == stage)
+        if candidate is not None:
+            conditions.append(results.c.is_candidate == candidate)
+        if after is not None:
+            null_flag, cursor_score, instrument = after
+            # Continuation for ORDER BY (score IS NULL) ASC, score DESC, instrument_id ASC:
+            # keep only rows strictly after the cursor row under that exact ordering.
+            if null_flag:
+                conditions.append(null_score & (results.c.instrument_id > instrument))
+            elif cursor_score is not None:
+                conditions.append(
+                    null_score
+                    | (results.c.score < cursor_score)
+                    | ((results.c.score == cursor_score) & (results.c.instrument_id > instrument))
+                )
+        with self._read() as connection:
+            documents = (
+                connection.execute(
+                    select(results.c.document)
+                    .join(runs, results.c.run_id == runs.c.id)
+                    .where(*conditions)
+                    .order_by(
+                        null_score.asc(), results.c.score.desc(), results.c.instrument_id.asc()
+                    )
+                    .limit(limit + 1)
+                )
+                .scalars()
+                .all()
+            )
+        more = len(documents) > limit
+        values = tuple(ScanResult.model_validate(d) for d in documents[:limit])
+        return values, more
 
     def publish(self, run: Run) -> None:
         started = perf_counter()

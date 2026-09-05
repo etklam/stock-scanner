@@ -2,19 +2,51 @@
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 from uuid import UUID
 
 from pydantic import Field, model_validator
 
 from qscan.domain.analysis import SymbolAnalysis
-from qscan.domain.models import CloseSeries, Contract, ErrorCode, RunState, ScanContext
+from qscan.domain.models import CloseSeries, Contract, DataMode, ErrorCode, RunState, ScanContext
 from qscan.domain.rules import RuleConfig
 
 
+class NullLock:
+    """No-op stand-in for the executor FileLock.
+
+    serve holds the real data-directory ownership lock for its whole lifetime;
+    services must not re-acquire that file from other threads (filelock
+    instances are not re-entrant across instances/threads).
+    """
+
+    timeout = 0
+
+    def acquire(self, timeout: float | None = None, poll_interval: float = 0.05) -> bool:
+        return True
+
+    def release(self) -> None: ...
+
+    def __enter__(self) -> "NullLock":
+        return self
+
+    def __exit__(self, *exc: object) -> None: ...
+
+
+class ServiceLock(Protocol):
+    """Context-manager surface of FileLock/NullLock; services never call acquire."""
+
+    def __enter__(self) -> Any: ...
+
+    def __exit__(self, exc_type: Any = None, exc_val: Any = None, exc_tb: Any = None) -> None: ...
+
+
 class ApplicationError(Exception):
-    def __init__(self, code: ErrorCode, message: str = "") -> None:
+    def __init__(
+        self, code: ErrorCode, message: str = "", details: dict[str, object] | None = None
+    ) -> None:
         self.code = code
+        self.details = details or {}
         super().__init__(message or code.value)
 
 
@@ -138,11 +170,22 @@ class Counts(Contract):
 
     @model_validator(mode="after")
     def consistent(self) -> "Counts":
-        if self.requested != self.evaluated + self.excluded + self.data_error:
+        pending = self.evaluated == self.excluded == self.data_error == 0
+        if not pending and self.requested != self.evaluated + self.excluded + self.data_error:
+            # Pending (QUEUED/not-yet-claimed) runs claim nothing; terminal states must add up.
             raise ValueError("Inconsistent counts")
         if self.candidate > self.evaluated:
             raise ValueError("Candidates exceed evaluations")
         return self
+
+
+class Progress(Contract):
+    """Live worker progress; coverage counts stay separate and unset until publication."""
+
+    phase: Literal["market_data", "analysis", "publication"]
+    processed_symbols: int = Field(ge=0)
+    total_symbols: int = Field(ge=1)
+    updated_at: datetime
 
 
 class ScanResult(Contract):
@@ -198,11 +241,14 @@ class Run(Contract):
     price_basis: str = "split_adjusted_close"
     source_run_id: UUID | None = None
     requested_at: datetime
-    started_at: datetime
+    started_at: datetime | None = None
     finished_at: datetime | None = None
     counts: Counts
+    progress: Progress | None = None
+    data_mode: DataMode = DataMode.AUTO
     timings: dict[str, float] = {}
     error: ErrorCode | None = None
+    warnings: tuple[str, ...] = ()
     results: tuple[ScanResult, ...] = ()
 
 
@@ -226,12 +272,35 @@ class Provider(Protocol):
 
 class Repository(Protocol):
     def save_watchlist(self, value: Watchlist, expected_revision: int | None) -> None: ...
+    def delete_watchlist(self, identity: UUID) -> None: ...
     def watchlist(self, identity: UUID) -> Watchlist: ...
     def watchlists(self) -> tuple[Watchlist, ...]: ...
     def cache(self, instrument: Instrument) -> CacheEntry | None: ...
     def replace_cache(self, instrument: Instrument, value: CacheEntry) -> None: ...
     def invalidate_cache(self, instrument: Instrument, reason: str) -> None: ...
     def create_run(self, run: Run) -> None: ...
+    def enqueue(
+        self, run: Run, idempotency_key: str, request_hash: str, queue_limit: int
+    ) -> tuple[bool, tuple[UUID, str] | None]: ...
+    def claim(self, run: Run) -> bool: ...
+    def update_progress(self, identity: UUID, progress: Progress) -> None: ...
+    def next_queued(self) -> UUID | None: ...
+    def run_owner(self, identity: UUID) -> str | None: ...
+    def run_by_idempotency(self, key: str) -> tuple[UUID, str] | None: ...
+    def recover_interrupted(self) -> int: ...
+    def runs_page(
+        self, *, after: tuple[str, str] | None, limit: int, state: str | None
+    ) -> tuple[tuple[Run, ...], bool]: ...
+    def run_summary(self, identity: UUID) -> Run: ...
+    def results_page(
+        self,
+        identity: UUID,
+        *,
+        after: tuple[int, int | None, str] | None,
+        limit: int,
+        stage: str | None,
+        candidate: bool | None,
+    ) -> tuple[tuple[ScanResult, ...], bool]: ...
     def publish(self, run: Run) -> None: ...
     def fail(self, run: Run) -> None: ...
     def run(self, identity: UUID) -> Run: ...

@@ -160,3 +160,43 @@ uv run python scripts/live_cli_smoke.py --data-dir /tmp/qscan-live-new --as-of 2
 CLI JSON stdout 使用標準 Unicode escapes，讓 Windows 舊 codepage 的重導向 pipe 也可
 由 UTF-8 JSON reader 無損解析。這只改 JSON 序列化，未改系統／Python encoding mode；
 JSON/HTML 檔案仍 UTF-8，CSV 仍 UTF-8 BOM。
+
+## Phase 4：serve、queue、鎖與 recovery
+
+`qscan serve`（預設 `127.0.0.1:8000`，`--host` 限 loopback、`--port`、
+`--queue-limit`、`--dev-openapi`）在啟動時：bootstrap（initialize=False，schema
+不符提示 init，exit 2）→ 取得 data-directory 級 `executor.lock` 所有權（被佔用
+時 exit 4）→ startup recovery → 啟動單一 worker thread → 開始 HTTP。
+
+鎖分三層（[ADR 0005](adr/0005-http-api-executor.md)）：
+
+| 鎖 | 持有者 | 範圍 |
+| --- | --- | --- |
+| `executor.lock`（serve 所有權） | serve process 全程 | 排除第二個 serve、CLI scan/replay/refresh、init/migration（exit 4）；read-only CLI 不受影響 |
+| 服務鎖（CLI=FileLock／serve=NullLock） | 每次掃描／cache 操作 | CLI 維持 Phase 2/3 行為；serve 內不重入所有權檔案，避免跨 thread 死結 |
+| SQLite 短交易 | 單一操作 | watchlist CAS、提交（key 保留＋容量＋insert 單一 `BEGIN IMMEDIATE`）、claim CAS、原子發布、progress |
+
+Queue 以 DB 為唯一事實來源：QUEUED 上限預設 20，超限 429；FIFO 按
+`(requested_at, id)`；冪等 scope/principal、request hash、重試語義見
+[api.md](api.md)。background task／記憶體 list 均未使用。
+
+**Startup recovery**（只在取得所有權後執行）：遺留 RUNNING →
+`FAILED/WORKER_INTERRUPTED`（保留原 started_at，無結果、不自動重跑）；QUEUED
+保留並繼續；已完成結果不重算；idempotency key 對應不變。process 被強制終止時
+由下一次啟動收尾，有真實 subprocess kill-process 測試覆蓋。
+
+**Shutdown**：uvicorn 收到信號後停止接受新請求，executor 進入合作式停止
+（每個 symbol 之間檢查 stop flag；已有界 grace，預設 30 秒）。thread 停止前
+不釋放所有權鎖、不 dispose engine；worker 卡在 provider 時不再等待，process
+結束交由下次 recovery，serve 以 exit 1 如實回報。asyncio 取消不等於 thread
+已停止，不假裝完成。
+
+**Migration 0003**：`scan_runs` 新增 `idempotency_key`／`request_hash` 欄位與
+`uq_runs_owner_idempotency` unique index（NULL 可重複，legacy/CLI rows 共存）。
+`qscan init` 在維護鎖內升級，舊 run 文件以預設值相容（`data_mode=auto`、
+`progress=null`、`warnings=[]`），歷史 results、comparison 與 Phase 3.5 snapshot
+可讀性不變；0002→0003 已有測試覆蓋。不支援 downgrade；請以一致備份還原。
+
+運行中觀察：`/health/ready` 回 DB 與 executor 狀態；`doctor` 的 lock 檢查在
+serve 運行時會如實顯示 BUSY。log/redaction：server 不記錄 request body 與
+header；token 只存在 api-token.json（0600），錯誤回應不含 stack 與本機路徑。

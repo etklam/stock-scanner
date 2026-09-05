@@ -854,15 +854,27 @@ concurrency 及 fixture overlap/full refresh 測試已完成；上列 Yahoo 綜�
 
 **目的：** App-ready 的介面，而不是只把 CLI 包一層 shell。
 
-- [ ] 實作 FastAPI schema、error envelope、watchlist CRUD／revision、rulesets 及 scan queries。
-- [ ] 實作 POST scan 202、DB job state、serial executor、進度及 startup recovery。
-- [ ] 實作 Idempotency-Key transaction／unique constraint、queue limit 及 cursor pagination。
-- [ ] 實作 run-bound detail／series／changes／export endpoints。
-- [ ] 加 local token、Origin／Host 檢查、owner scope、request limits 及 secret redaction。
-- [ ] 測 concurrent idempotency、雙 executor、process crash、資料寫入原子性。
-- [ ] 輸出 OpenAPI snapshot 及一個 HTTP client smoke example，確認不解析 HTML／CLI 文字也能完成流程。
+2026-09-06 本輪交付（branch `codex/phase4-local-api`，基於 Phase 3.5 已驗收
+e46068f／90dd5ad 工作樹）：
 
-**驗收：** HTTP client 可建立名單 → 提交任務 → 輪詢 → 取得結果／圖表資料；重送同 key 只得一個 run；重啟無永久 RUNNING；API 與 CLI 用同 snapshot 得到相同結果。完成本階段才算 CLI + API 功能齊備。
+- [x] 實作 FastAPI schema、error envelope、watchlist CRUD／revision、rulesets 及 scan queries。
+- [x] 實作 POST scan 202、DB job state、serial executor、進度及 startup recovery。
+- [x] 實作 Idempotency-Key transaction／unique constraint、queue limit 及 cursor pagination。
+- [x] 實作 run-bound detail／series／changes／export endpoints。
+- [x] 加 local token、Origin／Host 檢查、owner scope、request limits 及 secret redaction。
+- [x] 測 concurrent idempotency、雙 executor、process crash、資料寫入原子性。
+- [x] 輸出 OpenAPI snapshot 及一個 HTTP client smoke example，確認不解析 HTML／CLI 文字也能完成流程。
+
+`ScanService` 拆為 `prepare`（純組裝 QUEUED run）與 `execute_existing`（CAS 認領
+同一 id 執行並原子發布）；CLI `scan` 同步走同一對入口，worker 不產生第二個 run。
+migration 0003 為 `scan_runs` 加 `idempotency_key`／`request_hash` 欄位與
+owner+key unique index，不刪庫重建。serve 以 data-directory 所有權鎖獨占目錄
+（第二個 serve／CLI scan／init 衝突回 exit 4），服務以注入 NullLock 避免跨
+thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測證據、
+限制與本輪 CI 見 [驗收紀錄](phase-0-status.md)；Windows/Linux runner 結果以 CI
+實際 run 為準。
+
+**驗收：** HTTP client 可建立名單 → 提交任務 → 輪詢 → 取得結果／圖表資料；重送同 key 只得一個 run；重啟無永久 RUNNING；API 與 CLI 用同 snapshot 得到相同結果。完成本階段才算 CLI + API 功能齊備。本輪已以 repo 外 installed-wheel HTTP smoke（init → serve → HTTP 全流程 → 重啟查歷史）及 kill-process recovery 測試驗證；公開多使用者部署仍屬第 11.2 節範圍，不因本輪完成。
 
 ### Phase 5 — 跨平台、效能與 release hardening
 

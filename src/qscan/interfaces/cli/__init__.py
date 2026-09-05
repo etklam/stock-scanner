@@ -137,8 +137,33 @@ def application(
 @app.command()
 def init(ctx: typer.Context) -> None:
     """Create or upgrade local storage, preserving existing data."""
-    with application(ctx, initialize=True):
-        emit({"initialized": True, "provider_release": yahoo_release().status})
+    from qscan.interfaces.api.localauth import ensure_token
+
+    with application(ctx, initialize=True) as instance:
+        token_path = instance.data_dir / "api-token.json"
+        _, created = ensure_token(token_path)
+        emit(
+            {
+                "initialized": True,
+                "provider_release": yahoo_release().status,
+                "api_token": "created" if created else "kept",
+            }
+        )
+
+
+@app.command("token-rotate")
+def token_rotate(ctx: typer.Context) -> None:
+    """Explicitly replace the local API token; principal and ownership stay stable."""
+    from qscan.bootstrap import resolve_data_dir
+    from qscan.interfaces.api.localauth import rotate_token
+
+    directory = resolve_data_dir(ctx.obj[0])
+    token_path = directory / "api-token.json"
+    if not (directory / "qscan.sqlite3").is_file():
+        emit({"error": {"code": "VALIDATION_ERROR", "message": "Not initialized; run qscan init"}})
+        raise typer.Exit(2)
+    rotate_token(token_path)
+    emit({"rotated": True})
 
 
 @watchlists.command("import")
@@ -318,6 +343,37 @@ def report(
                 "chart_error": value.chart_error,
             }
         )
+
+
+@app.command()
+def serve(
+    ctx: typer.Context,
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    queue_limit: Annotated[int, typer.Option(min=1, max=1000)] = 20,
+    dev_openapi: Annotated[bool, typer.Option("--dev-openapi")] = False,
+) -> None:
+    """Run the loopback HTTP API with one serial durable scan executor."""
+    from qscan.bootstrap import resolve_data_dir
+    from qscan.interfaces.api.app import run_serve
+
+    if not host.startswith("127.") and host != "localhost":
+        emit({"error": {"code": "FORBIDDEN", "message": "serve is restricted to loopback"}})
+        raise typer.Exit(2)
+    from qscan.adapters.providers import FixtureProvider, YahooProvider
+
+    directory, source = ctx.obj
+    provider = FixtureProvider({}) if source == Source.FIXTURE else YahooProvider()
+    code = run_serve(
+        provider,
+        data_dir=resolve_data_dir(directory),
+        token_path=resolve_data_dir(directory) / "api-token.json",
+        host=host,
+        port=port,
+        queue_limit=queue_limit,
+        dev_openapi=dev_openapi,
+    )
+    raise typer.Exit(code)
 
 
 @app.command()

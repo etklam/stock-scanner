@@ -35,7 +35,7 @@ class ComparisonService:
                 continue
             if old.source_run_id is not None or old.finished_at is None:
                 continue
-            if old.finished_at > run.started_at:
+            if run.started_at is None or old.finished_at > run.started_at:
                 continue
             reasons = self.incompatibilities(run, old)
             if reasons:

@@ -1,11 +1,12 @@
-"""Initial API schemas; handlers, authorization, and job persistence arrive in Phase 4."""
+"""Implemented API contracts: request models, light status DTOs, result detail DTOs."""
 
-from datetime import date
+from datetime import date, datetime
 from typing import Annotated, Literal
 from uuid import UUID
 
 from pydantic import Field, JsonValue
 
+from qscan.domain.analysis import Reason, SymbolAnalysis, WindowAnalysis
 from qscan.domain.models import Contract, DataMode, ErrorCode
 
 Symbol = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9.^=-]+$")]
@@ -14,6 +15,11 @@ Symbol = Annotated[str, Field(min_length=1, max_length=32, pattern=r"^[A-Za-z0-9
 class CreateWatchlist(Contract):
     name: str = Field(min_length=1, max_length=100)
     symbols: tuple[Symbol, ...] = Field(min_length=1, max_length=2000)
+
+
+class PatchWatchlist(Contract):
+    name: str = Field(min_length=1, max_length=100)
+    expected_revision: int = Field(ge=1)
 
 
 class ReplaceSymbols(Contract):
@@ -28,20 +34,6 @@ class CreateScan(Contract):
     data_mode: DataMode = DataMode.AUTO
 
 
-class ScanLinks(Contract):
-    self: str
-    results: str
-
-
-class ScanAccepted(Contract):
-    id: UUID
-    state: Literal["QUEUED"] = "QUEUED"
-    as_of_session: date
-    watchlist_revision: int = Field(ge=1)
-    ruleset_version: str
-    links: ScanLinks
-
-
 class ErrorBody(Contract):
     code: ErrorCode
     message: str
@@ -51,3 +43,130 @@ class ErrorBody(Contract):
 
 class ErrorEnvelope(Contract):
     error: ErrorBody
+
+
+# --- Response DTOs; polling endpoints stay lightweight by design. ---
+
+
+class WatchlistOut(Contract):
+    id: UUID
+    name: str
+    revision: int
+    symbols: tuple[str, ...]
+    links: "WatchlistLinks"
+
+
+class WatchlistLinks(Contract):
+    self: str
+    symbols: str
+
+
+class RulesetOut(Contract):
+    id: str
+    version: str
+    windows: tuple[int, ...]
+    minimum_history: int
+    description: str
+
+
+class ProgressOut(Contract):
+    phase: Literal["market_data", "analysis", "publication"]
+    processed_symbols: int
+    total_symbols: int
+    updated_at: datetime
+
+
+class CountsOut(Contract):
+    requested: int
+    evaluated: int
+    excluded: int
+    data_error: int
+    candidate: int
+
+
+class ScanLinks(Contract):
+    self: str
+    results: str
+    changes: str
+    export: str
+    watchlist: str
+
+
+class ScanStatusOut(Contract):
+    """Light polling document: identity, state, sessions, progress, coverage, links."""
+
+    id: UUID
+    state: str
+    as_of_session: date
+    reference_session: date
+    watchlist_id: UUID
+    watchlist_revision: int
+    ruleset_id: str
+    ruleset_version: str
+    engine_version: str
+    data_mode: str
+    requested_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    progress: ProgressOut | None = None
+    counts: CountsOut | None = None
+    error: str | None = None
+    warnings: tuple[str, ...] = ()
+    source_run_id: UUID | None = None
+    links: ScanLinks
+
+
+class InstrumentOut(Contract):
+    id: UUID
+    display_symbol: str
+    exchange: str
+    currency: str
+    instrument_type: str
+
+
+class ResultOut(Contract):
+    """Full per-symbol detail; never included in polling/status payloads."""
+
+    instrument: InstrumentOut
+    analysis: SymbolAnalysis
+    reasons: tuple[Reason, ...]
+    warnings: tuple[str, ...]
+    category: Literal["evaluated", "excluded", "data_error"]
+    rank: int | None
+    alternative_windows: tuple[WindowAnalysis, ...]
+
+
+class Page(Contract):
+    next_cursor: str | None = None
+
+
+class ResultsPage(Page):
+    items: tuple[ResultOut, ...]
+
+
+class ScansPage(Page):
+    items: tuple[ScanStatusOut, ...]
+
+
+class SeriesOut(Contract):
+    run_id: UUID
+    instrument_id: UUID
+    symbol: str
+    sessions: tuple[date, ...]
+    closes: tuple[float, ...]
+    sma: dict[str, tuple[float | None, ...]]
+    window_start: date | None = None
+    window_end: date | None = None
+    close_resistance: float | None = None
+    displayed_sessions: int
+    price_basis: str
+    as_of_session: date
+
+
+class ScanAccepted(Contract):
+    id: UUID
+    state: Literal["QUEUED"] = "QUEUED"
+    as_of_session: date
+    watchlist_revision: int = Field(ge=1)
+    ruleset_version: str
+    links: ScanLinks

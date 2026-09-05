@@ -232,3 +232,56 @@ build 與 repo 外 Unicode 路徑 installed-wheel smoke 再次通過。新增 cp
 程式、離線測試、實際來源、跨平台四項證據已分別完成：EOD 個人試用可用，Phase 4 的
 前置条件滿足。尚未完成的盤中／production／授權及 Phase 4 功能仍依上方範圍列示。
 本紀錄的後續提交只同步文件，已驗收程式版本為上述 SHA。
+
+## Phase 4（2026-09-06 本輪實測）
+
+基線：branch `codex/phase35-stabilization` 90dd5ad（工作樹乾淨，含 Phase 3.5 已驗收
+e46068f 的全部修正）。本輪在該基線上直接實作 Phase 4，未 rebase／未 push／未改
+uv.lock 依賴版本（dev group 新增無、runtime 依賴零變更——fastapi/uvicorn/httpx
+皆已在 Phase 0 鎖定）。
+
+### 本輪本機驗證（macOS 25.6.0，Python 3.12，全部離線）
+
+- `uv sync --locked`：通過（73 packages audited）。
+- `uv run pytest -m "not online"`：**208 passed**（Phase 3.5 基線 187 + 本輪 21：
+  `test_phase4_api.py` 17、`test_phase4_executor.py` 4），0 skip、0 fail。
+- `uv run ruff check .`、`uv run ruff format --check .`：全部通過。
+- `uv run mypy`（strict，39 source files）：Success。
+- `uv build` + `uv run python scripts/wheel_smoke.py`：repo 外 Unicode 路徑
+  installed-wheel **CLI smoke**（原 Phase 3.5 全流程）與新增 **HTTP smoke**
+  （`qscan serve` → 401 無 token → 建名單 → 202+Location 提交 → 輪詢至
+  SUCCEEDED → 同 key 重試 200 回原 run → results/detail/series/changes/CSV
+  （X-Scan-State、X-Result-Count、BOM、2 行）→ 停機 → 重啟後歷史 run 與
+  CLI run 仍可讀、idempotency 對應不變）全部通過。
+- `docs/openapi.json` 快照由 `scripts/openapi_snapshot.py` 生成，13 paths／
+  24 schemas，`--check` 模式可比對。
+- 真實 `qscan serve`（port 8901）+ `scripts/http_client_example.py` 全流程實跑：
+  QUEUED → RUNNING（progress market_data 0/1）→ SUCCEEDED，results/detail/
+  series（126 sessions）/changes/CSV 全部經 HTTP 取得。
+
+### Crash recovery（真實 subprocess，非 mock）
+
+`test_kill_running_server_recovers_on_restart`：以 fixture provider 在 server
+子程序內將一個 job 卡在 fetch（harness-only 檔案訊號，production 無此介面），
+第二個 job 維持 QUEUED，`kill -9` 整個 serve process 後以同一資料目錄重啟：
+遺留 RUNNING 變 `FAILED/WORKER_INTERRUPTED`（原 started_at 保留、input_hash
+null、無已發布結果）、QUEUED job 以同一 scan_id 完成並可查、crash 前已完成的
+run document 逐欄不變、同 Idempotency-Key 重試仍回原（中斷）run 的 id。
+連接埠由 bind(0) 動態取得，無 fork 依賴、無固定 sleep 等待。
+
+### 冪等與併發
+
+`test_concurrent_same_key_creates_one_run`（8 並發同 key：恰一個 202、其餘 200、
+單一 run row）、`test_queue_limit_full_and_existing_key_still_readable`（queue 滿
+後 429，既有 key 重試仍 200 可讀）、`test_idempotency_retry_after_date_roll_and_
+watchlist_edit`（時鐘跨日＋名單修改／刪除後重試仍回原任務）、
+`test_migration_0002_to_0003_preserves_history`（0002 舊 DB 經 init 升級，歷史
+results／snapshot 可讀、新 queue 欄位可用）。
+
+### 仍未完成／範圍外
+
+- 三平台 CI 尚未對本輪 commit 執行（不可自動 push；push 後由既有
+  `offline-quality` workflow 覆蓋，wheel_smoke 已含 HTTP 步驟）。
+- 公開部署所需之真實身份/授權、TLS、多使用者資料授權、負載驗證（第 11.2 節）。
+- Yahoo 盤中／production 行情、公開再分發授權（gate 維持 EOD_TRIAL）。
+- 使用者取消任務 API、自動重跑、多 worker、PostgreSQL——依計劃延後。
