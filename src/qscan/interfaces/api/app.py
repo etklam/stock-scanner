@@ -49,6 +49,7 @@ from qscan.interfaces.api.schemas import (
     ScansPage,
     ScanStatusOut,
     SeriesOut,
+    SessionOut,
     WatchlistLinks,
     WatchlistOut,
 )
@@ -520,6 +521,14 @@ def create_app(
                 links=links_for(run),
             ).model_dump(mode="json"),
             headers={"Location": f"/api/v1/scans/{run.id}"},
+        )
+
+    @app.get("/api/v1/sessions/current")
+    def sessions_current(api: Principal) -> SessionOut:
+        """Latest completed market session; read-only scheduling input."""
+        context = api.scans.current_session()
+        return SessionOut(
+            as_of_session=context.as_of_session, reference_session=context.reference_session
         )
 
     @app.get("/api/v1/scans")

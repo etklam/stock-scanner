@@ -412,6 +412,19 @@ def serve(
 
 
 @app.command()
+def sessions(ctx: typer.Context) -> None:
+    """Report the latest completed market session new scans would use."""
+    with application(ctx, readonly=True) as instance:
+        context = instance.scans.current_session()
+        emit(
+            {
+                "as_of_session": context.as_of_session.isoformat(),
+                "reference_session": context.reference_session.isoformat(),
+            }
+        )
+
+
+@app.command()
 def doctor(ctx: typer.Context, online: Annotated[bool, typer.Option()] = False) -> None:
     from qscan.adapters.diagnostics import diagnose
     from qscan.bootstrap import resolve_data_dir

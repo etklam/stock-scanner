@@ -18,6 +18,16 @@ uv run python scripts/check.py --fast   # 快版：唔 build、唔裝 wheel
   （單機代替唔到跨平台驗證，文件宣稱要如實）。
 - 文件／報告入面提及「CI」一律指歷史紀錄；現行驗證 = 本地 `scripts/check.py`。
 
+## SQLite runtime：release 前必須核實（5.1 新規則）
+
+- Python 內建 SQLite 有官方 WAL-reset bug advisory（sqlite.org/wal.html
+  #walresetbug；修復 3.51.3，2026-03-13；backport 3.50.7／3.44.6）。
+- **release 驗收前必須確認實際 runtime 的 `sqlite3.sqlite_version`** 屬
+  3.51.3+ 或上述 backport；`qscan doctor` 的 `sqlite_runtime` 檢查會列出判定
+  （`sqlite_wal_reset_status`；同分支非 backport 的較新 patch 亦報 AFFECTED）。
+- pip/OSV 套件 audit 不等於內建 SQLite runtime audit；「低機率」不得寫成
+  「無已知問題」。已知 blocker 記錄於 docs/release-checklist.md。
+
 ## 其他既有規則（摘要，詳見 docs/development-plan.md 第 16 節）
 
 - Python 3.12 + uv；唔好隨便升 dependency 或改 `uv.lock`；只為實際驗收失敗做必要修正。

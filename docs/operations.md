@@ -229,10 +229,27 @@ uv run qscan --data-dir "$HOME/qscan-restored" init        # 如 schema 較舊�
 
 **規則：** `serve` 在跑 → 只用 HTTP client 提交；serve 沒跑 → 用獨立 CLI scan。
 **永遠不要**在 serve 運行時對同一資料目錄直接跑 CLI `scan`（會 exit 4）。
-日期由內建市場日曆以「已完成收市 + buffer」判斷，程式從不假設本地今天＝美股今天；
-休市日會解析到前一個完成 session。`scripts/daily_scan.py` 封裝此規則：同日重觸發
-不重跑（state file）、重試沿用同一 idempotency key、retry/poll 有上限、token 只進
-Authorization header（不進 URL／log／排程定義）、exit 0/1/2/3/4 與 CLI 一致。
+
+**去重與意圖（5.1 修正後語義）：**
+- 「是否已掃過」由**市場日曆服務解析的最新完成 session** 決定（`qscan sessions`
+  或 `GET /api/v1/sessions/current`），wrapper 不自行判斷假期／DST／收市時間，
+  也不以本地日期作身份。
+- 一個掃描意圖 =（watchlist **UUID**、resolved session、名單 revision、provider、
+  attempt）。Idempotency-Key 是該身份的 SHA-256——重試、斷線、程序重啟沿用
+  **同一 key 與同一 body**；`--force` 遞增 attempt（新意圖、新 key），該次意圖內
+  的重試仍用新 key。
+- **名單修改（revision 變更）＝新意圖**：會重新掃描；相同身份的重跑不會：
+  SUCCEEDED → exit 0、PARTIAL → exit 3（視為已涵蓋，補掃請 `--force`）、
+  FAILED → **exit 1**（不自動重試失敗任務；要重掃請 `--force`）。
+- watchlist 接受 name 或 UUID；name 歧義時拒絕（exit 2），不猜第一個。
+- HTTP 已可能接受請求後**永不退回 CLI**：401/403/409 是設定／意圖錯誤（exit 2）、
+  429 與 timeout 是 busy（exit 4，可恢復——下次觸發先查詢或重放原 key）。
+- state：`<data-dir>/daily-scan-state.json`（版本化），以 wrapper 專屬
+  `daily-scan.lock` 串行化 + 唯一暫存檔原子寫；該 lock 不觸 executor.lock，
+  不會與 serve 死鎖。同一資料目錄同時只有一個 wrapper 操作（並發觸發會等待後
+  去重，或 exit 4）。
+- exit 0/1/2/3/4 與 CLI 一致；token 只進 Authorization header（不進 URL／log／
+  排程定義）。
 
 macOS launchd（`~/Library/LaunchAgents/com.qscan.daily.plist`）：
 

@@ -332,3 +332,26 @@ results／snapshot 可讀、新 queue 欄位可用）。
 GitHub Actions workflow 已因費用移除；上文各段提及的 CI run 編號屬歷史紀錄
 （最後一次三平台全綠為 `614e7c3`）。現行品質把關 = 本地
 `uv run python scripts/check.py`（規則見 [AGENTS.md](../AGENTS.md)）。
+
+## Phase 5.1 驗收（2026-09-06，基線 9b65b07）
+
+- **排程語義重寫**：session 去重改由市場日曆服務解析（新 `qscan sessions`
+  CLI 與 `GET /api/v1/sessions/current`，OpenAPI 已更新）；意圖身份 =
+  watchlist UUID + session + revision + provider + attempt；`--force` 新意圖、
+  意圖內重試同 key/body；FAILED 維持 exit 1；state file 專屬 lock + 原子寫；
+  401/403/409/429/timeout 分流。測試：`test_phase5_operations.py` 重寫為
+  10 個情境（雙時鐘 API/CLI 全流程、lost-ack 重放同 run、401 不退回 CLI、
+  revision 變更重掃、並發 scheduler 單一 run、參數驗證等）。
+- **備份加固**：`backup.py` 重寫驗證路徑（bounds/集合一致性/格式解碼/單一
+  來源還原/claim 發布）；`test_phase51_backup.py` 11 個 regression，其中
+  bounds/一致性/format 類以 git stash 實證在 9b65b07 失敗、修正後通過；
+  既有 9 個 backup 測試（含 WAL、舊 schema 升級、roundtrip）全部保留通過。
+- **SQLite runtime 更正**：本機 uv cpython-3.12.12 帶 SQLite 3.50.4，屬官方
+  WAL-reset bug（修復 3.51.3，2026-03-13；backport 3.50.7/3.44.6）受影響
+  版本；Phase 5 checklist 的「無已知公告」宣稱已撤回。`doctor` 新增
+  `sqlite_runtime` 檢查與 `sqlite_wal_reset_status` 判定；已實測修復路徑
+  （brew python@3.12 = 3.12.14 + SQLite 3.53.4）。**狀態：BLOCKER**——
+  切換鎖定 runtime 前不宣稱 SQLite 已驗收。
+- **離線 gate**：`tests/conftest.py` socket guard 阻擋非 loopback 連線；
+  全部排程/備份測試以固定時鐘執行，不依賴測試當日日期；本輪全套
+  238→255 tests（最終數字以 gate 輸出為準）於 macOS 本機通過。

@@ -283,14 +283,10 @@ def test_restore_rejects_untrusted_archives_and_never_partial_restores(tmp_path)
     occupied.mkdir()
     with pytest.raises(ApplicationError, match="already exists"):
         restore_backup(archive, occupied)
-    stale = tmp_path / ".fresh.restore-staging"
-    stale.mkdir()
+    # Stale fixed-name staging directories are impossible by construction
+    # (staging names are unique per restore); a concurrent publish is covered
+    # by the phase 5.1 tests.
     fresh = tmp_path / "fresh"
-    with pytest.raises(ApplicationError, match="Stale"):
-        restore_backup(archive, fresh)
-    assert not fresh.exists()
-    # A verified archive still restores cleanly once the conflict is gone.
-    stale.rmdir()
     restore_backup(archive, fresh)
     assert (fresh / "qscan.sqlite3").is_file()
 

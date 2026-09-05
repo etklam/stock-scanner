@@ -1005,6 +1005,28 @@
         "title": "SeriesOut",
         "type": "object"
       },
+      "SessionOut": {
+        "additionalProperties": false,
+        "description": "Latest completed market session new scans would use.",
+        "properties": {
+          "as_of_session": {
+            "format": "date",
+            "title": "As Of Session",
+            "type": "string"
+          },
+          "reference_session": {
+            "format": "date",
+            "title": "Reference Session",
+            "type": "string"
+          }
+        },
+        "required": [
+          "as_of_session",
+          "reference_session"
+        ],
+        "title": "SessionOut",
+        "type": "object"
+      },
       "Stage": {
         "enum": [
           "FORMING",
@@ -1793,6 +1815,25 @@
           }
         },
         "summary": "Series"
+      }
+    },
+    "/api/v1/sessions/current": {
+      "get": {
+        "description": "Latest completed market session; read-only scheduling input.",
+        "operationId": "sessions_current_api_v1_sessions_current_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Sessions Current"
       }
     },
     "/api/v1/watchlists": {

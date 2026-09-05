@@ -163,6 +163,13 @@ class SeriesOut(Contract):
     as_of_session: date
 
 
+class SessionOut(Contract):
+    """Latest completed market session new scans would use."""
+
+    as_of_session: date
+    reference_session: date
+
+
 class ScanAccepted(Contract):
     id: UUID
     state: Literal["QUEUED"] = "QUEUED"

@@ -5,6 +5,25 @@
 **定位：** 本地 CLI + loopback API／個人美股 EOD 試用的發布候選。
 不是公開多使用者平台，不是 production-ready App，不含下單或績效回測。
 
+### Phase 5.1 — Daily Scheduling & Backup Verification Corrections
+
+- 排程去重改以市場日曆解析的 completed session 為準（新唯讀介面
+  `qscan sessions` / `GET /api/v1/sessions/current`）；意圖身份 =
+  watchlist UUID + session + revision + provider + attempt；`--force` 遞增
+  attempt 建立新意圖，意圖內所有重試沿用同一 key 與 body；FAILED 維持
+  exit 1、PARTIAL 維持 exit 3，不再偽裝成功；state file 改用 wrapper 專屬
+  lock（不觸 executor.lock）+ 唯一暫存檔原子寫；401/403/409/429/timeout
+  分流，HTTP 已接受後永不退回 CLI。
+- 備份驗證加固：manifest 獨立上限、zip/內層 gzip 邊讀邊計數的解壓上限、
+  entry 集合必須等於 manifest 宣告、runs_by_state/unfinished counts 驗證、
+  snapshot 以支援 schema 解碼驗證（hash 正確但格式不支援仍拒絕）、restore
+  對同一開啟的 archive 重驗 + claim-then-rename 發布。
+- SQLite WAL-reset advisory 更正：本機 runtime 3.50.4 屬 AFFECTED（修復於
+  3.51.3；backport 3.50.7/3.44.6）；doctor 列出 runtime 與判定；release
+  acceptance 對受影響 runtime 維持 BLOCKER，直至切換已修 build。
+- 離線 gate：suite-wide socket guard 硬性阻擋非 loopback 連線；排程測試
+  以兩個固定時鐘執行，不依賴真實今日。
+
 ### Phase 5 — Local V1 Release Hardening
 
 - **一致備份／驗證／還原**：`qscan backup create/verify/restore`。SQLite backup API

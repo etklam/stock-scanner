@@ -58,8 +58,11 @@
 | **1000×504** | **0.423s（目標 ≤10s）** | 17.29s | 4.16s | 3.29/0.62/0.77s | 316MB |
 | 2000×504 | 0.663s | 72.98s | 11.19s | 13.01/5.47/4.98s | 517MB |
 
-解讀：核心計算遠低於計劃目標；**實際日常成本在渲染（matplotlib 圖表）與
-強制重抓**，文件已如實標示。API slow-provider 段：worker 被可控慢 provider 卡住時
+解讀（僅就已分段量測的證據）：核心計算遠低於計劃目標；此 synthetic 設定下
+已量到的主要耗時為**渲染（matplotlib 圖表）**與 fixture 路徑的取得＋驗證＋
+發布（e2e force scan 列）。**fixture/in-memory 的 force scan 不代表 Yahoo
+下載耗時**——網絡取得未在本輪 profile，不得把未歸因時間全數說成網絡或
+渲染；逐段數字以檔內 raw samples 為準。API slow-provider 段：worker 被可控慢 provider 卡住時
 status/results/冪等重放照常服務（submit 0.08s、status median 0.066s、無重複入隊）。
 自動化只跑小規模 correctness（`tests/`），絕對秒數不作任何硬門檻。
 
@@ -79,11 +82,10 @@ status/results/冪等重放照常服務（submit 0.08s、status median 0.066s、
 - token 寫入：temp file 先 0600 再 atomic replace（`localauth._write`），含 review。
 - backup/restore 對不可信 archive 的防護見上第 3 節與 ADR 0006。
 - dependency/security advisory 檢查（**2026-09-06**）：OSV.dev querybatch 對
-  uv.lock 全部關鍵套件（filelock/pydantic/sqlalchemy/fastapi/uvicorn/alembic/
-  yfinance/pandas/numpy/matplotlib/typer/exchange-calendars/pandas-market-calendars）
-  ——0 已知漏洞。SQLite runtime 為 Python 3.12.12 內建 3.50.4，無已知公告。
-  本輪零依賴變更。`uvx pip-audit` 在本機環境無法建 venv（ensurepip SIGABRT），
-  以 OSV API 直接查詢代替；方法與日期如實記錄。
+  uv.lock 全部關鍵套件——0 已知漏洞。`uvx pip-audit` 在本機環境無法建 venv
+  （ensurepip SIGABRT），以 OSV API 直接查詢代替。注意：**pip 套件 audit 不等同
+  Python 內建 SQLite runtime audit**（見下節 Phase 5.1 更正）。
+  本輪（Phase 5.1）零依賴變更。
 - 第三方 warnings（pandas_market_calendars/exchange_calendars NumPy DeprecationWarning、
   starlette TestClient deprecation）屬上游套件，記錄於此；不加 blanket ignore、
   不為消警告而升級。
@@ -110,3 +112,58 @@ status/results/冪等重放照常服務（submit 0.08s、status median 0.066s、
 - 渲染效能受 matplotlib 支配；未做跨平台渲染效能宣稱。
 - live smoke 日期為 2026-09-04 session；日後重跑結果可能不同，屬正常。
 - 無 installer／GUI／自動更新（計劃內延後項）。
+
+---
+
+# Phase 5.1 更正與追加（2026-09-06，commit 基線 9b65b07）
+
+## SQLite runtime 驗收 — BLOCKER（未解除前不得視為已驗收 release）
+
+- **實際 runtime（本機 macOS arm64）**：uv cpython-3.12.12，`sqlite3.sqlite_version`
+  = **3.50.4**。
+- **官方來源（當日查核）**：sqlite.org/news.html——「Patch release 3.51.3 fixes
+  the WAL-reset bug」；sqlite.org/wal.html#walresetbug——WAL-Reset bug
+  （2026-03-03 發現，罕見情況可致資料庫損壞）；修復版本 3.51.3（2026-03-13），
+  釋出分支 backport 為 **3.50.7** 與 **3.44.6**。相關分析：Antithesis
+  「Breaking the WAL」、Tailscale blog（2026）。
+- **判定**：3.50.4 **不在**已修清單——本機 runtime **AFFECTED**。此前 Phase 5
+  checklist 寫「SQLite 3.50.4 無已知公告」屬**錯誤宣稱**，已撤回；亦不宣稱
+  使用者既有 DB 已損壞（該 bug 是罕見觸發條件，非必然損壞）。
+- **修復路徑（已實測）**：`brew install python@3.12` → Python 3.12.14 +
+  SQLite **3.53.4**（≥3.51.3，已含修復）。本輪最終驗收 gate 全部以該 runtime
+  執行（見下）。各平台部署前須確認其 Python build 的
+  `sqlite3.sqlite_version` 屬 3.51.3+ 或 3.50.7/3.44.6 backport；
+  `qscan doctor` 現會列出 runtime 與 advisory 判定（3.50.9 等同分支非
+  backport 版本亦報 AFFECTED，不用「所有 ≥3.50.7 都安全」的錯誤判斷）。
+- **狀態：BLOCKER**——uv 預設下載的 cpython-3.12.12 仍帶 3.50.4；在项目鎖定
+  runtime 切換到已修 build（例如 UV_PYTHON 指向帶新 SQLite 的 Python 3.12）
+  之前，本發布候選不得標為 SQLite-runtime 已驗收。
+
+## Phase 5.1 修正範圍（詳見 CHANGELOG）
+
+- 排程語義：session 由市場日曆服務解析（新 `qscan sessions` /
+  `GET /api/v1/sessions/current`）；去重身份 = watchlist UUID + resolved
+  session + revision + provider + attempt；--force 遞增 attempt（同意圖重試
+  沿用同一 key）；FAILED 維持 exit 1；state file 有專屬 lock + 原子寫入；
+  401/403/409 與 429/timeout 分流；HTTP 已接受後永不退回 CLI。
+- 備份加固：所有 entry（含 manifest）讀取前有獨立上限；zip 與內層 gzip 解壓
+  邊讀邊計數；entry 集合必須等於 manifest 宣告（settings allowlist、digest
+  不重複、未引用內容拒絕）；runs_by_state/unfinished counts 驗證；snapshot
+  以支援 schema 解碼驗證（hash 正確但格式不支援仍拒絕）；restore 對同一開啟
+  的 archive 先重驗再解壓，claim-then-rename 發布，唯一 staging 目錄。
+- 離線 gate：tests/conftest.py 以 socket guard 硬性阻擋非 loopback 連線；
+  排程測試以兩個固定時鐘完整流程執行，不依賴真實今日；standalone CLI 測試
+  明確 --provider fixture（不意外使用 Yahoo）。
+
+## 本輪實測（2026-09-06，macOS arm64）
+
+- 安全 runtime（Python 3.12.14 + SQLite 3.53.4）+ 原鎖定依賴：
+  `scripts/check.py` 全套通過（lint/format/mypy/offline tests/OpenAPI
+  check/build/wheel smoke）。
+- 回歸證據：5.1 新增 scheduler/backup regression tests 中，備份 bounds/
+  consistency/format 類在 9b65b07 舊實作上以 git stash 實證失敗、修正後通過；
+  scheduler 舊語義（本機日期去重、FAILED→exit 0、force 同 key）由重寫後的
+  測試直接釘住。
+- 備份→verify→restore→report/replay 與 scheduler CLI/API 路徑均重跑通過。
+- Windows/Linux：**本輪未跑**（無 hosted CI）；須於各平台手動
+  `uv run python scripts/check.py` 後方可宣稱跨平台。

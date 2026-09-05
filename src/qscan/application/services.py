@@ -36,7 +36,7 @@ from qscan.application.contracts import (
 from qscan.application.quality import validate
 from qscan.core import analyze_symbol, rank_candidates
 from qscan.domain.analysis import Reason, SymbolAnalysis
-from qscan.domain.models import DataMode, ErrorCode, RunState
+from qscan.domain.models import DataMode, ErrorCode, RunState, ScanContext
 from qscan.domain.rules import RuleConfig
 
 
@@ -593,6 +593,15 @@ class ScanService:
             result = self.execute_existing(run.id)
             assert result is not None, "Freshly submitted run must be claimable"
             return result
+
+    def current_session(self) -> ScanContext:
+        """Latest completed session for new scans; read-only scheduling intent.
+
+        The single resolution point for daily-scheduler deduplication: the
+        market calendar owns holidays, DST and the close buffer, so callers
+        never duplicate that logic against a local wall-clock date.
+        """
+        return self.calendar.resolve(None, self.clock.now())
 
     def replay(self, source_id: UUID) -> Run:
         with self.lock:

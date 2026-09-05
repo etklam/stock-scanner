@@ -52,3 +52,22 @@ V1 需要可日常使用的備份／還原。資料目錄只有一個 SQLite（W
 - 演練證據（含未 checkpoint WAL、舊 schema 升級、不可信 archive、忙碌拒絕）見
   `tests/integration/test_phase5_backup.py`、`scripts/wheel_smoke.py` 與
   [release checklist](../release-checklist.md)。
+
+## 5.1 修訂（2026-09-06）
+
+- **上限邊讀邊算**：manifest 讀入前有獨立大小上限；每個 entry（DB、snapshot、
+  settings）有單檔上限並計入一份共享累積 budget；snapshot 內層 gzip 解壓以
+  streaming 計數（多 member 亦受上限約束），達上限即以 typed validation error
+  拒絕並清理 staging。測試以縮小 budget 證明，不分配真實 GB 記憶體。
+- **集合一致性**：archive entry 集合必須等於 manifest 宣告集合——settings 必須
+  在 allowlist 且帶 hash/size；snapshot digest 不可重複宣告；DB 引用、manifest
+  集合與實際檔案三方一致，未引用內容明確拒絕；runs_by_state／unfinished
+  counts 一併驗證；必要欄位有 typed validation，不出裸 KeyError。
+- **格式驗證**：hash 正確不足以放行——snapshot 以支援版本的 decoder
+  （schema_version）解碼驗證；unknown schema 拒絕；支援的歷史 schema 不因
+  engine 版本不同而禁止歷史讀取；exact replay 的 engine 相容性仍在 replay 層。
+- **單一來源**：restore 對**同一個已開啟**的 archive 完成重驗與解壓——先前
+  verify(path) 的結果不再被假設對稍後 reopen 的同一有效；extraction 期間維持
+  path/type/size 限制；staging 以 tempfile 唯一命名；發布以 exclusive claim
+  （O_EXCL）加 rename，並發還原只有一個成功；verify 與 extraction 之間來源被
+  換走的情況因單一開啟而消失，且 restore 本身永遠重新完整驗證。

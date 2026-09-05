@@ -198,7 +198,10 @@ jobs；還原後第一次 init/serve 建立新 token。細節與邊界見
 [ADR 0006](docs/adr/0006-backup-format.md) 與 [operations](docs/operations.md)。
 
 **排程**：`scripts/daily_scan.py` 是唯一的排程入口——serve 在跑就走 HTTP（重試沿用
-同一 idempotency key），沒跑就退回獨立 CLI；同日重觸發不重跑，日期由市場日曆判斷。
+同一 idempotency key），沒跑就退回獨立 CLI；去重以身分（watchlist UUID＋日曆解析的
+session＋revision＋provider＋attempt）計算，名單修改（revision 變更）會重掃，
+`--force` 建立新意圖，FAILED 維持 exit 1 不偽裝成功；`qscan sessions` 可隨時查
+下一個掃描會用的完成 session。
 launchd／schtasks／cron／systemd timer 完整範例（絕對路徑、無 venv 依賴）見
 [operations](docs/operations.md)；範例不會被本工具自動安裝。
 
