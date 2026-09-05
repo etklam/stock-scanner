@@ -90,9 +90,11 @@ app = typer.Typer(no_args_is_help=True, cls=CommandGroup)
 watchlists = typer.Typer(no_args_is_help=True)
 scans = typer.Typer(no_args_is_help=True)
 data = typer.Typer(no_args_is_help=True)
+backup = typer.Typer(no_args_is_help=True)
 app.add_typer(watchlists, name="watchlist")
 app.add_typer(scans, name="scans")
 app.add_typer(data, name="data")
+app.add_typer(backup, name="backup")
 
 
 class Source(StrEnum):
@@ -408,4 +410,57 @@ def demo(ctx: typer.Context, output: Annotated[Path | None, typer.Option()] = No
             result["reports"] = [str(export(value, output, format).resolve()) for format in formats]
         finally:
             instance.close()
+    emit(result)
+
+
+@backup.command("create")
+def backup_create(
+    ctx: typer.Context,
+    output: Annotated[
+        Path,
+        typer.Option(
+            help="Archive path; must not exist and must live outside the data directory."
+        ),
+    ],
+) -> None:
+    """Consistently back up an idle data directory; refuse if serve/scan/migration owns it."""
+    import sys
+
+    from qscan.adapters.backup import create_backup
+    from qscan.bootstrap import resolve_data_dir
+
+    directory = resolve_data_dir(ctx.obj[0])
+    print(f"backup: copying {directory}", file=sys.stderr, flush=True)
+    manifest = create_backup(directory, output)
+    print("backup: archive verified and published", file=sys.stderr, flush=True)
+    emit({"created": True, "output": str(output), "manifest": manifest})
+
+
+@backup.command()
+def verify(ctx: typer.Context, archive: Path) -> None:
+    """Fully verify a backup archive offline; machine-readable report."""
+    from qscan.adapters.backup import verify_backup
+
+    emit(verify_backup(archive))
+
+
+@backup.command()
+def restore(
+    ctx: typer.Context,
+    archive: Path,
+    destination: Annotated[
+        Path, typer.Option(help="New data directory; it must not exist.")
+    ],
+) -> None:
+    """Restore an archive into a fresh directory; a new local token is created."""
+    import sys
+
+    from qscan.adapters.backup import restore_backup
+    from qscan.interfaces.api.localauth import ensure_token
+
+    print(f"restore: verifying and extracting {archive}", file=sys.stderr, flush=True)
+    result = restore_backup(archive, destination)
+    _, created = ensure_token(Path(result["destination"]) / "api-token.json")
+    result["token"] = "created" if created else "kept"
+    print("restore: published destination", file=sys.stderr, flush=True)
     emit(result)

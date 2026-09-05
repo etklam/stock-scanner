@@ -54,6 +54,15 @@ SERVE_SCRIPT = textwrap.dedent(
     from datetime import date
     from pathlib import Path
 
+    if sys.platform == "win32":
+        # The harness spawns the server in its own process group so the test
+        # can target it with a console Ctrl+C. Windows disables CTRL_C delivery
+        # for such groups; re-enable it so the Ctrl+C a real console user types
+        # reaches uvicorn's SIGINT handler and drives the production shutdown.
+        import ctypes
+
+        ctypes.windll.kernel32.SetConsoleCtrlHandler(None, False)
+
     data_dir = Path(sys.argv[1])
     hold = Path(sys.argv[2])
     port = int(sys.argv[3])
