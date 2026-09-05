@@ -22,7 +22,7 @@ from uuid import UUID
 
 import pytest
 from fastapi.testclient import TestClient
-from filelock import FileLock
+from filelock import FileLock, Timeout
 from sqlalchemy import text
 
 import qscan.application.reporting as reporting
@@ -118,6 +118,40 @@ def free_port() -> int:
         return sock.getsockname()[1]
 
 
+def _graceful_stop_serve(process: subprocess.Popen) -> None:
+    """Trigger the same graceful stop a console Ctrl+C would, per OS.
+
+    Windows cannot deliver SIGINT to another process (Popen raises
+    "Unsupported signal: 2"); the real console Ctrl+C a serve user types
+    arrives as a console control event instead. The child was created in its
+    own process group so the event targets the server; the test ignores
+    SIGINT for the moment in case the console broadcasts it.
+    """
+    if sys.platform == "win32":
+        previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+        try:
+            process.send_signal(signal.CTRL_C_EVENT)
+        finally:
+            signal.signal(signal.SIGINT, previous)
+    else:
+        process.send_signal(signal.SIGINT)
+
+
+def _redacted_serve_logs(workdir: Path, token: str, limit: int = 4000) -> str:
+    """Redacted tail of the serve subprocess output for failure diagnostics."""
+    pieces = []
+    for name in ("serve-stdout.log", "serve-stderr.log"):
+        path = workdir / name
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        if token:
+            text = text.replace(token, "<redacted-token>")
+        pieces.append(f"--- {name} (tail) ---\n{text[-limit:]}")
+    return "\n".join(pieces)
+
+
 def test_shutdown_timeout_exits_process_and_releases_ownership(tmp_path):
     """A worker parked past the stop grace must not outlive the ownership lock.
 
@@ -143,13 +177,24 @@ def test_shutdown_timeout_exits_process_and_releases_ownership(tmp_path):
     hold = tmp_path / "hold-fetch"
     hold.touch()
     port = free_port()
-    process = subprocess.Popen(
-        [sys.executable, str(script), str(directory), str(hold), str(port)],
-        cwd=workdir,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
-    )
+    # Child output goes to files (not DEVNULL) so failures carry diagnostics;
+    # handles are closed in the parent right after spawn.
+    output_handles = [
+        (workdir / "serve-stdout.log").open("wb"),
+        (workdir / "serve-stderr.log").open("wb"),
+    ]
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(script), str(directory), str(hold), str(port)],
+            cwd=workdir,
+            stdout=output_handles[0],
+            stderr=output_handles[1],
+            env={**os.environ, "PYTHONPATH": SRC_ROOT},
+            creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0),
+        )
+    finally:
+        for handle in output_handles:
+            handle.close()
     try:
         import httpx
 
@@ -162,7 +207,9 @@ def test_shutdown_timeout_exits_process_and_releases_ownership(tmp_path):
                 pass
             time.sleep(0.1)
         else:
-            raise AssertionError("serve subprocess never became reachable")
+            raise AssertionError(
+                "serve subprocess never became reachable\n" + _redacted_serve_logs(workdir, "")
+            )
         token = json.loads((directory / "api-token.json").read_text())["token"]
         headers = {"Authorization": f"Bearer {token}"}
         watchlist_id = httpx.get(
@@ -190,12 +237,28 @@ def test_shutdown_timeout_exits_process_and_releases_ownership(tmp_path):
 
         # Graceful stop with the worker parked mid-scan: the process itself must
         # exit (worker and lock die together), not return while the worker lives.
-        process.send_signal(signal.SIGINT)
-        assert process.wait(30) == 1
+        _graceful_stop_serve(process)
+        try:
+            returncode = process.wait(30)
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError(
+                "serve subprocess survived the graceful stop beyond 30s; the worker "
+                f"outlived the stop grace\n{_redacted_serve_logs(workdir, token)}"
+            ) from exc
+        assert returncode == 1, (
+            f"serve exited {returncode} instead of the stop-timeout exit code 1\n"
+            + _redacted_serve_logs(workdir, token)
+        )
 
         # The ownership lock died with the process: acquirable immediately.
         lock = FileLock(directory / "executor.lock", timeout=1)
-        lock.acquire(timeout=1)
+        try:
+            lock.acquire(timeout=1)
+        except Timeout as exc:
+            raise AssertionError(
+                "executor lock still held after serve exited; ownership outlived "
+                f"the worker\n{_redacted_serve_logs(workdir, token)}"
+            ) from exc
         lock.release()
 
         # The interrupted scan is finalized by the next startup's recovery.
