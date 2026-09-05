@@ -96,6 +96,7 @@ CLI / 本地排程 ─────────────┐
 ```python
 # Contract sketch only; all code comments and docstrings should be in English.
 
+
 def analyze_symbol(
     series: CloseSeries,
     rules: RuleConfig,
@@ -774,12 +775,12 @@ CI 至少有 Windows、macOS、Linux 三個 runner，全部安裝已鎖定依賴
 
 **目的：** 先固定最容易造成重寫的資料與介面決策。
 
-- [ ] 建立 package、uv lock、Ruff／mypy／pytest、三平台 CI 骨架。
-- [ ] 寫 ADR：close-only 邊界、價格 basis、單 process + SQLite、core／CLI／API 分層。
+- [x] 建立 package、uv lock、Ruff／mypy／pytest、三平台 CI 骨架。
+- [x] 寫 ADR：close-only 邊界、價格 basis、單 process + SQLite、core／CLI／API 分層。
 - [ ] 驗證 yfinance 的單／多 ticker 回傳形狀、Close／Adj Close、拆股、除息、end exclusive 及 incomplete session。
 - [ ] 用小型合法個人測試名單驗證來源；離線 fixtures 使用 synthetic 或可合法保留的最小樣本，勿把整批第三方歷史提交 repository。
-- [ ] 固定 typed domain models、RuleConfig、error codes 與 API schema 初稿。
-- [ ] 把仍未核實的 provider 行為記錄為明確失敗／限制，不用猜測關閉問題。
+- [x] 固定 typed domain models、RuleConfig、error codes 與 API schema 初稿。
+- [x] 把仍未核實的 provider 行為記錄為明確失敗／限制，不用猜測關閉問題。
 
 **驗收：** `uv sync --locked` 及最小離線測試在三平台可跑；provider spike 有紀錄；核心資料型別只容許 Close。若來源口徑未通過，先阻擋線上 provider release，不阻擋 fixture core 開發。
 
@@ -787,11 +788,14 @@ CI 至少有 Windows、macOS、Linux 三個 runner，全部安裝已鎖定依賴
 
 **目的：** 完全不依賴網絡、DB 或 HTTP 也能篩選。
 
-- [ ] 實作 session-indexed features、10／20／40 日窗口及 unavailable feature 語義。
-- [ ] 實作 gate、五維 scoring、stage、窗口選擇、reason codes 及穩定排名。
-- [ ] 為每個門檻、null、zero denominator、下跌／突破／延伸例子寫測試。
+- [x] 實作 session-indexed features、10／20／40 日窗口及 unavailable feature 語義。
+- [x] 實作 gate、五維 scoring、stage、窗口選擇、reason codes 及穩定排名。
+- [x] 為每個門檻、null、zero denominator、下跌／突破／延伸例子寫測試。
 - [ ] 加 no-lookahead 與 close-only invariance tests。
-- [ ] 將公式、參數及限制寫入 `docs/rules.md`，與 fixture expected results 對照。
+- [x] 將公式、參數及限制寫入 `docs/rules.md`，與 fixture expected results 對照。
+
+本機離線核心交付及未完成驗收見 [開發驗收記錄](phase-0-status.md)。no-lookahead 已測；
+close-only 合約拒絕額外欄位已測，完整 provider OHLCV invariance 待 Phase 2 adapter。
 
 **驗收：** 人手可核對的 synthetic datasets 有固定 expected output；所有公式、stage 邊界及未來資料擾動測試通過。不接受只以真實股票圖片「睇落似」作驗收。
 

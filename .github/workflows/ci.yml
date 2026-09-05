@@ -1,0 +1,38 @@
+name: offline-quality
+on: [push, pull_request]
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.12.5"
+          enable-cache: true
+      - run: uv python install 3.12
+      - run: uv sync --locked
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest -m "not online"
+      - run: uv build
+      - name: Install wheel and smoke test outside repository
+        shell: python
+        run: |
+          import os, pathlib, subprocess, tempfile
+          root = pathlib.Path.cwd()
+          wheel = next((root / "dist").glob("*.whl"))
+          with tempfile.TemporaryDirectory(prefix="qscan 測試 ") as temporary:
+              env = pathlib.Path(temporary) / "wheel env"
+              subprocess.run(["uv", "venv", "--python", "3.12", str(env)], check=True)
+              binary = env / ("Scripts" if os.name == "nt" else "bin")
+              python = binary / ("python.exe" if os.name == "nt" else "python")
+              subprocess.run(["uv", "pip", "install", "--python", str(python), "--no-deps", str(wheel)], check=True)
+              # Reuse exactly the dependency versions already installed from the lock.
+              subprocess.run(["uv", "export", "--locked", "--no-dev", "--no-emit-project", "--output-file", str(env / "deps.txt")], check=True)
+              subprocess.run(["uv", "pip", "install", "--python", str(python), "-r", str(env / "deps.txt")], check=True)
+              subprocess.run([str(binary / ("qscan.exe" if os.name == "nt" else "qscan")), "--version"], cwd=temporary, check=True)

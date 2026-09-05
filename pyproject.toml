@@ -1,0 +1,45 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "close-setup-scanner"
+version = "0.1.0"
+description = "A close-only setup scanner for reproducible manual review"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "numpy>=2,<3", "pandas>=2.2,<3", "typer>=0.16,<1",
+  "fastapi>=0.115,<1", "pydantic>=2.11,<3", "uvicorn>=0.34,<1",
+  "sqlalchemy>=2,<3", "alembic>=1.15,<2", "yfinance>=0.2.65,<1",
+  "pandas-market-calendars>=5,<6", "tzdata>=2025.2",
+  "platformdirs>=4,<5", "filelock>=3.18,<4",
+  "jinja2>=3.1,<4", "matplotlib>=3.10,<4",
+]
+
+[project.scripts]
+qscan = "qscan.interfaces.cli:app"
+
+[dependency-groups]
+dev = ["pytest>=8,<10", "httpx>=0.28,<1", "ruff>=0.12,<1", "mypy>=1.16,<2", "pandas-stubs>=2.2,<3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/qscan"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src/qscan"]
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+markers = ["online: explicit live provider checks; excluded from offline CI"]
