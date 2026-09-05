@@ -47,6 +47,8 @@ def test_migration_roundtrip_owner_and_reopen(setup, calendar):
         "watchlist_members",
         "scan_runs",
         "scan_results",
+        "prices_by_provider",
+        "cache_by_provider",
     }
     with app.engine.connect() as connection:
         assert connection.scalar(text("PRAGMA foreign_keys")) == 1

@@ -61,6 +61,7 @@ class ErrorCode(StrEnum):
     FORBIDDEN = "FORBIDDEN"
     NOT_FOUND = "NOT_FOUND"
     INTERNAL_ERROR = "INTERNAL_ERROR"
+    REPORT_ERROR = "REPORT_ERROR"
 
 
 class CloseSeries(Contract):

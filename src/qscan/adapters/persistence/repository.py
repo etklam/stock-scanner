@@ -14,11 +14,11 @@ from sqlalchemy.exc import IntegrityError
 from qscan.adapters.persistence.migrations.schema_v1 import (
     instruments,
     members,
-    prices,
     results,
     runs,
     watchlists,
 )
+from qscan.adapters.persistence.migrations.schema_v2 import cache, prices
 from qscan.application.contracts import (
     ApplicationContext,
     ApplicationError,
@@ -33,8 +33,13 @@ from qscan.application.contracts import (
 from qscan.domain.models import CloseSeries, ErrorCode, RunState
 
 
-def open_database(path: Path) -> Engine:
-    engine = create_engine(URL.create("sqlite", database=str(path)), connect_args={"timeout": 10})
+def open_database(path: Path, *, readonly: bool = False) -> Engine:
+    url = (
+        URL.create("sqlite", database=path.as_uri(), query={"mode": "ro", "uri": "true"})
+        if readonly
+        else URL.create("sqlite", database=str(path))
+    )
+    engine = create_engine(url, connect_args={"timeout": 10})
 
     @event.listens_for(engine, "connect")
     def configure(connection: object, record: object) -> None:
@@ -44,7 +49,8 @@ def open_database(path: Path) -> Engine:
         assert isinstance(connection, sqlite3.Connection)
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA busy_timeout=10000")
-        connection.execute("PRAGMA journal_mode=WAL")
+        if not readonly:
+            connection.execute("PRAGMA journal_mode=WAL")
 
     return engine
 
@@ -59,8 +65,11 @@ def migrate(engine: Engine) -> None:
 
 
 class SQLiteRepository:
-    def __init__(self, engine: Engine, context: ApplicationContext, clock: Clock) -> None:
+    def __init__(
+        self, engine: Engine, context: ApplicationContext, clock: Clock, provider: str = "fixture"
+    ) -> None:
         self.engine, self.context, self.clock = engine, context, clock
+        self.provider = provider
 
     def _instrument(self, connection: Connection, value: Instrument) -> None:
         connection.execute(
@@ -159,14 +168,19 @@ class SQLiteRepository:
     def cache(self, instrument: Instrument) -> CacheEntry | None:
         with self.engine.connect() as connection:
             info = connection.execute(
-                select(instruments.c.cache_info).where(instruments.c.id == str(instrument.id))
+                select(cache.c.document).where(
+                    cache.c.instrument_id == str(instrument.id), cache.c.provider == self.provider
+                )
             ).scalar_one_or_none()
             if info is None:
                 return None
             rows = (
                 connection.execute(
                     select(prices)
-                    .where(prices.c.instrument_id == str(instrument.id))
+                    .where(
+                        prices.c.instrument_id == str(instrument.id),
+                        prices.c.provider == self.provider,
+                    )
                     .order_by(prices.c.session)
                 )
                 .mappings()
@@ -186,9 +200,15 @@ class SQLiteRepository:
             )
 
     def replace_cache(self, instrument: Instrument, value: CacheEntry) -> None:
+        if value.provenance.provider != self.provider:
+            raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Cache source mismatch")
         with self.engine.begin() as connection:
             self._instrument(connection, instrument)
-            connection.execute(delete(prices).where(prices.c.instrument_id == str(instrument.id)))
+            connection.execute(
+                delete(prices).where(
+                    prices.c.instrument_id == str(instrument.id), prices.c.provider == self.provider
+                )
+            )
             connection.execute(
                 insert(prices),
                 [
@@ -206,9 +226,16 @@ class SQLiteRepository:
                 ],
             )
             connection.execute(
-                update(instruments)
-                .where(instruments.c.id == str(instrument.id))
-                .values(cache_info=value.model_dump(mode="json", exclude={"series"}))
+                sqlite_insert(cache)
+                .values(
+                    instrument_id=str(instrument.id),
+                    provider=self.provider,
+                    document=value.model_dump(mode="json", exclude={"series"}),
+                )
+                .on_conflict_do_update(
+                    index_elements=["instrument_id", "provider"],
+                    set_={"document": value.model_dump(mode="json", exclude={"series"})},
+                )
             )
 
     def invalidate_cache(self, instrument: Instrument, reason: str) -> None:
@@ -219,14 +246,14 @@ class SQLiteRepository:
             )
             with self.engine.begin() as connection:
                 connection.execute(
-                    update(instruments)
-                    .where(instruments.c.id == str(instrument.id))
+                    update(cache)
+                    .where(
+                        cache.c.instrument_id == str(instrument.id),
+                        cache.c.provider == self.provider,
+                    )
                     .values(
-                        cache_info=cached.model_copy(
-                            update={
-                                "trusted": False,
-                                "provenance": provenance,
-                            }
+                        document=cached.model_copy(
+                            update={"trusted": False, "provenance": provenance}
                         ).model_dump(mode="json", exclude={"series"})
                     )
                 )
@@ -336,3 +363,14 @@ class SQLiteRepository:
                 .all()
             )
         return tuple(self.run(UUID(i)) for i in identities)
+
+    def summaries(self, limit: int | None = 30) -> tuple[Run, ...]:
+        with self.engine.connect() as connection:
+            statement = (
+                select(runs.c.document)
+                .where(runs.c.owner_id == self.context.principal)
+                .order_by(runs.c.created_at.desc(), runs.c.id.desc())
+            )
+            if limit is not None:
+                statement = statement.limit(limit)
+            return tuple(Run.model_validate(d) for d in connection.execute(statement).scalars())

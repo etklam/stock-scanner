@@ -434,13 +434,13 @@ API 不暴露本機 snapshot path。歷史報告、圖表及 replay 讀取該 ru
 
 首次執行顯示 `NO_BASELINE`，不把所有項目當作新信號。名單新增／移除另標示 `UNIVERSE_CHANGED`；今天缺價、資料隔離或歷史不足用 `COMPARISON_UNAVAILABLE`，不當作形態惡化。
 
-同一日有多個 run，預設以最後完成且可比較的 run 為日別 baseline，記錄選取的 previous_run_id。不同 config hash 或非相鄰 sessions 不顯示「一日變化」。主要觀察窗口改變需附 `WINDOW_CHANGED`，不把分數變動單純解讀為價格變動。若歷史修訂涉及上個 run 的分析區間，附 `DATA_REVISION_DIFF`；不把差異全歸因於新一天的價格，也不重寫舊 baseline。
+同一日有多個 run，只取本次 scan 開始前已完成且可比較的 run，按 finished_at DESC、UUID DESC 選取，保存 previous_run_id 與 comparison semantic version。replay 不参与 baseline；比較結果隨 run publication 保存，後來補跑不改寫。legacy 缺 binding 明示 unavailable；細節见 data-quality.md。不同 config hash 或非相鄰 sessions 不顯示「一日變化」。主要觀察窗口改變需附 `WINDOW_CHANGED`，不把分數變動單純解讀為價格變動。若歷史修訂涉及上個 run 的分析區間，附 `DATA_REVISION_DIFF`；不把差異全歸因於新一天的價格，也不重寫舊 baseline。
 
 ---
 
 ## 7. CLI 合約
 
-以下是**待實作的目標命令**，不是目前已存在的程式。
+Phase 3 已實作以下離線 CLI（serve 留待 Phase 4）；可直接執行的 demo 與來源限制見 README。
 
 ```bash
 uv sync --locked
@@ -459,11 +459,10 @@ uv run qscan report <scan-id> --format html --top 30 --output ./output
 uv run qscan report <scan-id> --format csv --output ./output
 uv run qscan replay <scan-id>
 
-uv run qscan serve --host 127.0.0.1 --port 8000
 uv run qscan doctor
 ```
 
-所有命令支援明確的 data directory。`watchlist import` 遇到同名 list 不默默覆蓋；須使用 `--replace`，並提升 revision。也可使用 UUID，CLI name 只作方便使用的別名。
+Global `--data-dir` 放在 subcommand 前，優先於 QSCAN_DATA_DIR，且必須是絕對路徑。`watchlist import` 遇到同名 list 不默默覆蓋；須使用 `--replace`，並提升 revision。也可使用 UUID，CLI name 只作方便使用的別名。
 
 `scan` 預設同步等候，仍使用同一套持久化 run／executor 邏輯；執行摘要輸出 scan ID、實際 session、成功評估／排除／錯誤數、候選數及報告位置。JSON 結果只寫 stdout；log／progress 寫 stderr，方便 pipe。
 
@@ -473,7 +472,7 @@ uv run qscan doctor
 | 1 | 不可恢復的執行失敗，或沒有任何標的可以有效評估 |
 | 2 | 輸入、設定、交易日或權限驗證失敗 |
 | 3 | 部分成功；有結果，但部分標的因資料／下載錯誤未能評估 |
-| 4 | 執行器已由其他本地程序持有；改用現有 API 提交或稍後重跑 |
+| 4 | 執行器已由其他本地程序持有；稍後重跑（API 未實作） |
 
 `doctor` 檢查目錄權限、DB schema、設定、lock 狀態與時區資料。網絡／provider 測試需明確 `--online`，避免診斷命令預設產生外部請求。
 
@@ -823,11 +822,14 @@ concurrency 及 fixture overlap/full refresh 測試已完成；上列 Yahoo 綜�
 
 **目的：** 使用者不需啟動 web server，已可完成日常流程。
 
-- [ ] 實作第 7 節 CLI、exit codes、stdout／stderr 分流與 doctor。
-- [ ] 輸出 JSON、CSV、HTML 與 top-candidate Close charts。
-- [ ] 實作歷史 run 查詢、snapshot replay、daily changes 與比較限制。
-- [ ] 補 HTML escaping、CSV 防護、跨平台檔案與 headless 測試。
-- [ ] README 提供由空目錄開始、匯入 list、掃描、開啟報告的最短流程。
+- [x] 實作第 7 節 CLI、exit codes、stdout／stderr 分流與 doctor。
+- [x] 輸出 JSON、CSV、HTML 與 top-candidate Close charts。
+- [x] 實作歷史 run 查詢、snapshot replay、daily changes 與比較限制。
+- [x] 補 HTML escaping、CSV 防護、跨平台檔案與 headless 測試。
+- [x] README 提供由空目錄開始、匯入 list、掃描、開啟報告的最短流程。
+
+本次本機 CLI／offline wheel 驗收見 [紀錄](phase-0-status.md)。三平台 CI 已延伸，
+本次 Windows/Linux runner 與手機瀏覽器視覺驗收仍待執行；Yahoo 維持 BLOCKED。
 
 **驗收：** fresh install 可跑 fixture demo；有來源時可跑個人名單；第二次 cache-only 結果可重現；零候選、partial failure、report failure 都有明確輸出。完成本階段已有可用 CLI MVP。
 

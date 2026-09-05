@@ -27,4 +27,4 @@
 
 結果保存 context、config hash、共同及各窗口特徵、分項分數、原因與 unavailable 狀態。
 Phase 2 已加入 fixture／受阻擋的 Yahoo adapter、資料快取及持久化；核心公式未改。
-CLI scan 與 HTTP handlers 仍未實作。
+Phase 3 CLI scan 已沿用上述核心；HTTP handlers 仍未實作。

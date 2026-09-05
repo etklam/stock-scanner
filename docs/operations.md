@@ -67,3 +67,47 @@ snapshot 寫成但 DB publication 失敗可能留下孤立快照，正常查詢�
 ApplicationContext 是可信本機 bootstrap context，預設 local principal。不能將未來 HTTP 的
 owner_id 任意值直接放進此 context；身份驗證與 transport 授權仍屬 Phase 4。
 各 principal 只能查自己的 watchlist/run/results。這是分層邊界，不是已完成帳戶系統。
+
+## Phase 3 CLI 與 schema 0002
+
+本節更新上方 Phase 2 操作描述。正式 CLI 現已提供 init、watchlist import/list、data refresh、
+scan、scans list/show/changes、report、replay、demo、doctor；沒有 serve 或 HTTP server。
+完整可執行命令見 README。所有 global options 放在 subcommand 前；data-dir 優先於環境變數，
+必須是絕對本機路徑。demo 的 `--output` 可直接產出 JSON/CSV/HTML。
+
+CLI 只有 init／demo 初始化；其他命令以 `initialize=False` 開啟相容 DB，查詢／report 另用
+SQLite URI `mode=ro`。schema 不符會提示 init，不在一般讀取中升級。程式呼叫 bootstrap
+預設仍維持 Phase 2 初始化行為，呼叫者需要唯讀時明確指定 initialize=False, readonly=True。
+
+migration 0002 新增 cache_by_provider／prices_by_provider，複製既有 cache，保留原 tables。
+provider 是 cache key 的一部分，fixture 和 Yahoo 同 instrument 不互相覆蓋。run 新欄位
+comparison／price_basis 存在既有 JSON document，提供向後相容 defaults，不刪庫重建。
+請在維護鎖下備份整個資料目錄再 init；不支援 downgrade，以一致備份還原。
+
+歷史 list 預設 30、上限 200，按 requested_at DESC、UUID DESC 排序，不載入 results rows。
+show 保留所有分類結果。refresh 使用相同 calendar／market service／lock，只更新 cache，
+不建立 run。以可信舊 cache fallback 的 refresh 會包含 warning，exit 3。
+
+| 本次操作 exit | 意義 |
+| --- | --- |
+| 0 | 成功；掃描零候選也成功；成功讀取／匯出歷史 PARTIAL／FAILED 仍可為 0 |
+| 1 | 執行／報告失敗，或 scan/replay/refresh 沒有有效結果 |
+| 2 | 參數、交易日、設定、schema、檔案權限或查找驗證失敗；doctor local 不健康 |
+| 3 | scan/replay 部分資料錯誤，或 refresh 部分失敗／fallback warning |
+| 4 | executor lock busy；稍後重試，不刪 lock、不改寫 run state |
+
+JSON 模式 stdout 是一個 document（含錯誤 envelope），warnings／progress 用 stderr。
+stdout 錯誤包含 error.code/message，參數錯誤另有 details.hint；不輸出 exception stack 或
+snapshot 私有路徑。NOT_FOUND 也是 owner scope 拒絕跨 owner 資源的行為。
+
+report 先在記憶體完成 render，再以同目的目錄暫存檔、fsync、atomic replace 發布。
+同 ID 重建可安全取代舊成功檔；render/write 失敗為 REPORT_ERROR、保留舊報告與 run，
+可直接重試 report。圖表缺失會在 JSON/HTML 顯示 chart_error，不換用最新行情。
+CSV 預設候選、--all-results 含所有分類；文字前綴 =/+/-/@ 防 formula injection，真正負數
+數值不加引號前綴。JSON／HTML UTF-8，CSV UTF-8 BOM，比例欄為 decimal ratios。
+
+預設 doctor 零網絡，檢查路徑／權限、schema、lock、snapshot directory、timezone/calendar。
+未初始化會如實回報，不建立 DB；不修復 RUNNING 或解除 gate。local_healthy 與
+Yahoo release BLOCKED 分開呈現；lock BUSY 不是 Yahoo 問題。
+--online 額外做一次 AAPL 2024-06-03..07 來源診斷（一次 attempt、request timeout 5 秒），
+不保存市場 cache，也不放行來源；provider cookie／HTTP library 的內部快取由該 library 管理。

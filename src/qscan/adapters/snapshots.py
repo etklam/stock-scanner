@@ -27,9 +27,10 @@ def canonical(value: InputSnapshot) -> bytes:
 
 
 class SnapshotStore:
-    def __init__(self, directory: Path) -> None:
+    def __init__(self, directory: Path, *, create: bool = True) -> None:
         self.directory = directory
-        directory.mkdir(parents=True, exist_ok=True)
+        if create:
+            directory.mkdir(parents=True, exist_ok=True)
 
     def path(self, digest: str) -> Path:
         if not re.fullmatch("[0-9a-f]{64}", digest):
@@ -68,4 +69,6 @@ class SnapshotStore:
                 raise ValueError("Noncanonical snapshot")
             return value
         except (OSError, EOFError, ValueError, ValidationError, zlib.error) as exc:
-            raise ApplicationError(ErrorCode.SCAN_FAILED, f"Snapshot unavailable: {exc}") from exc
+            raise ApplicationError(
+                ErrorCode.SCAN_FAILED, "Snapshot missing, corrupt, or incompatible"
+            ) from exc

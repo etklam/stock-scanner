@@ -86,3 +86,36 @@ data_error。規則不符仍計 evaluated。至少一個 evaluation 且沒有 da
 有部分 data_error 為 PARTIAL；全域失敗或零 evaluation 為 FAILED。零候選可以成功。
 永遠驗證 `requested = evaluated + excluded + data_error`、`candidate <= evaluated`。
 未新增 domain ErrorCode；snapshot 損壞／不相容使用 `SCAN_FAILED` 附明確診斷訊息。
+
+## Phase 3 每日比較（semantic_version 1）
+
+baseline 在 scan 取得 executor lock、建立 RUNNING 之前選定，隨 run document 保存。
+只取同 owner（repository scope）、watchlist UUID、config hash、price_basis、完全相同
+engine version、exact reference_session 的 SUCCEEDED/PARTIAL 且 evaluated > 0 run。
+finished_at 必須不晚於本次 started_at；同日依 finished_at DESC、UUID DESC 決勝。
+source_run_id 非空的 replay 永遠不參與日常 baseline 選擇。
+
+比較結果在本次 publication 內保存 comparison.previous_run_id、兩個 session、binding、
+semantic_version、reasons、changes 及變更前後 analyses。後來補跑舊日期／replay 都不會
+改寫舊 comparison。沒有前一日 baseline 用 NO_BASELINE；有規則／basis／engine 不相容
+前一日 run 用 COMPARISON_UNAVAILABLE 與明確原因。只用 exact previous session，
+不回退幾日前。較晚完成、失敗或 replay 的 runs 不構成有效 baseline。
+
+相同 instrument UUID 兩日都 category=evaluated 才比較 candidate、stage、score、window。
+新增／移除名單成員只用 UNIVERSE_CHANGED；短歷史、隔離、缺價及昨日無有效 evaluation
+用 COMPARISON_UNAVAILABLE，不能叫掉出候選。provider 不同也不可比較。
+NEW_CANDIDATE／DROPPED_CANDIDATE 可伴隨 STAGE_CHANGED、SCORE_CHANGED、WINDOW_CHANGED。
+兩 snapshot 交疊 Close 超過 rel_tol=1e-8、abs_tol=1e-10 的差異附 DATA_REVISION_DIFF；
+這只是修訂警示，不推算分數變動原因，也不重算舊 baseline。
+
+legacy run 缺 comparison 時回傳 binding=legacy_unavailable、LEGACY_BASELINE_NOT_RECORDED，
+不事後挑 baseline 冒充當時紀錄。replay 為 replay_unavailable、REPLAY_NOT_DAILY_SCAN。
+baseline snapshot 在本次比較時缺失／損壞會保存 BASELINE_SNAPSHOT_UNAVAILABLE；既有
+已保存 comparison 不依賴之後的 cache，也不會因後來 snapshot 消失被重寫。
+
+圖表只取 run.input_hash 對應快照，檢查 context/watchlist/config；均線為包含當日 Close
+的 SMA10/20/50，前期不足保持 null；selected window 陰影截止 reference_session。
+--top 不改 persisted counts/results/ranks。render 不重新計算策略。
+
+schema 0002 將 cache 改為 provider + instrument scope，保留並搬入原有 cache；fixture
+不覆蓋 Yahoo，也不能被 Yahoo cache_only 接受。這是來源隔離，並非多租戶 market cache。

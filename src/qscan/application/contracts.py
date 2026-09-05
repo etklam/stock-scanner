@@ -81,6 +81,23 @@ class InputItem(Contract):
         return self
 
 
+class RefreshItem(Contract):
+    instrument: Instrument
+    available: bool
+    updated: bool
+    error: ErrorCode | None = None
+    warnings: tuple[str, ...] = ()
+    provenance: Provenance | None = None
+
+
+class RefreshResult(Contract):
+    context: ScanContext
+    items: tuple[RefreshItem, ...]
+    successful: int
+    failed: int
+    has_warnings: bool
+
+
 class InputSnapshot(Contract):
     schema_version: Literal[1] = 1
     context: ScanContext
@@ -135,6 +152,38 @@ class ScanResult(Contract):
     provenance: Provenance | None = None
 
 
+ChangeCode = Literal[
+    "NEW_CANDIDATE",
+    "DROPPED_CANDIDATE",
+    "STAGE_CHANGED",
+    "SCORE_CHANGED",
+    "WINDOW_CHANGED",
+    "UNIVERSE_CHANGED",
+    "COMPARISON_UNAVAILABLE",
+    "DATA_REVISION_DIFF",
+    "NO_BASELINE",
+]
+
+
+class Change(Contract):
+    instrument_id: UUID | None = None
+    symbol: str | None = None
+    codes: tuple[ChangeCode, ...]
+    reasons: tuple[str, ...] = ()
+    previous: SymbolAnalysis | None = None
+    current: SymbolAnalysis | None = None
+
+
+class Comparison(Contract):
+    semantic_version: Literal[1] = 1
+    previous_run_id: UUID | None = None
+    previous_session: date
+    current_session: date
+    binding: Literal["recorded", "legacy_unavailable", "replay_unavailable"] = "recorded"
+    reasons: tuple[str, ...] = ()
+    changes: tuple[Change, ...] = ()
+
+
 class Run(Contract):
     id: UUID
     state: RunState
@@ -143,6 +192,8 @@ class Run(Contract):
     rules: RuleConfig
     config_hash: str
     input_hash: str | None = None
+    comparison: Comparison | None = None
+    price_basis: str = "split_adjusted_close"
     source_run_id: UUID | None = None
     requested_at: datetime
     started_at: datetime
@@ -183,6 +234,7 @@ class Repository(Protocol):
     def fail(self, run: Run) -> None: ...
     def run(self, identity: UUID) -> Run: ...
     def runs(self) -> tuple[Run, ...]: ...
+    def summaries(self, limit: int | None = 30) -> tuple[Run, ...]: ...
 
 
 class Snapshots(Protocol):

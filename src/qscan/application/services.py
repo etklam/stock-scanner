@@ -22,6 +22,8 @@ from qscan.application.contracts import (
     Provenance,
     Provider,
     RawPrices,
+    RefreshItem,
+    RefreshResult,
     Repository,
     Run,
     ScanResult,
@@ -38,6 +40,55 @@ from qscan.domain.rules import RuleConfig
 class WatchlistService:
     def __init__(self, repository: Repository, provider: Provider, lock: FileLock) -> None:
         self.repository, self.provider, self.lock = repository, provider, lock
+
+    def list(self) -> tuple[Watchlist, ...]:
+        return self.repository.watchlists()
+
+    def lookup(self, name_or_id: str) -> Watchlist:
+        try:
+            identity = UUID(name_or_id)
+        except ValueError:
+            matches = [w for w in self.list() if w.name == name_or_id]
+            if len(matches) != 1:
+                raise ApplicationError(
+                    ErrorCode.NOT_FOUND if not matches else ErrorCode.VALIDATION_ERROR,
+                    "Watchlist not found" if not matches else "Ambiguous name; use UUID",
+                ) from None
+            return matches[0]
+        return self.repository.watchlist(identity)
+
+    def import_named(
+        self,
+        name: str,
+        content: bytes,
+        format: str = "txt",
+        *,
+        replace: bool = False,
+        expected_revision: int | None = None,
+    ) -> Watchlist:
+        old = None
+        try:
+            old = self.lookup(name)
+        except ApplicationError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+        if old is not None and not replace:
+            raise ApplicationError(
+                ErrorCode.WATCHLIST_VERSION_CONFLICT, "Name exists; use --replace explicitly"
+            )
+        if expected_revision is not None and old is None:
+            raise ApplicationError(
+                ErrorCode.VALIDATION_ERROR, "Revision requires an existing watchlist"
+            )
+        return self.import_content(
+            old.name if old else name,
+            content,
+            format,
+            watchlist_id=old.id if old else None,
+            expected_revision=(expected_revision if expected_revision is not None else old.revision)
+            if old
+            else None,
+        )
 
     def import_content(
         self,
@@ -117,6 +168,40 @@ class MarketDataService:
             raise ValueError("Review interval must be positive")
         self.repository, self.provider, self.clock, self.lock = repository, provider, clock, lock
         self.review_interval = review_interval
+
+    def refresh(
+        self, watchlist_id: UUID, calendar: Calendar, as_of: date | None = None
+    ) -> RefreshResult:
+        with self.lock:
+            watchlist = self.repository.watchlist(watchlist_id)
+            context = calendar.resolve(as_of, self.clock.now())
+            expected = calendar.sessions(
+                context.as_of_session - timedelta(days=1100), context.as_of_session
+            )[-504:]
+            obtained = tuple(
+                self.obtain(i, expected, DataMode.FORCE) for i in watchlist.instruments
+            )
+            items = tuple(
+                RefreshItem(
+                    instrument=i.instrument,
+                    available=i.series is not None,
+                    updated=i.series is not None
+                    and i.provenance is not None
+                    and not i.provenance.cache,
+                    error=i.error,
+                    provenance=i.provenance,
+                    warnings=(*i.warnings, *(i.provenance.warnings if i.provenance else ())),
+                )
+                for i in obtained
+            )
+            successful = sum(i.available for i in items)
+            return RefreshResult(
+                context=context,
+                items=items,
+                successful=successful,
+                failed=len(items) - successful,
+                has_warnings=any(i.warnings for i in items),
+            )
 
     def obtain(
         self, instrument: Instrument, expected: tuple[date, ...], mode: DataMode
@@ -278,6 +363,11 @@ class ScanQueryService:
     def list(self) -> tuple[Run, ...]:
         return self.repository.runs()
 
+    def summaries(self, limit: int = 30) -> tuple[Run, ...]:
+        if not 1 <= limit <= 200:
+            raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Limit must be 1..200")
+        return self.repository.summaries(limit)
+
 
 class ScanService:
     def __init__(
@@ -320,6 +410,11 @@ class ScanService:
                 counts=Counts(
                     requested=len(watchlist.instruments), data_error=len(watchlist.instruments)
                 ),
+            )
+            from qscan.application.reporting import ComparisonService
+
+            run = run.model_copy(
+                update={"comparison": ComparisonService(self.repository, self.snapshots).bind(run)}
             )
             self.repository.create_run(run)
             started = perf_counter()
@@ -449,6 +544,15 @@ class ScanService:
                     candidate=len(ranks),
                 ),
                 "results": tuple(output),
+            }
+        )
+        from qscan.application.reporting import ComparisonService
+
+        completed = completed.model_copy(
+            update={
+                "comparison": ComparisonService(self.repository, self.snapshots).complete(
+                    completed, snapshot
+                )
             }
         )
         self.repository.publish(completed)

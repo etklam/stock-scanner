@@ -27,3 +27,28 @@ An evaluated run with data errors is PARTIAL; no evaluation or global failure is
 These are application contracts, not implemented HTTP responses. HTTP server, authentication,
 202 submission, idempotency, pagination, worker recovery and public result DTO mapping remain
 Phase 4 work. Current services execute synchronously and do not depend on HTTP or Typer.
+
+## Phase 3 shared contracts (HTTP still unimplemented)
+
+`qscan.application.reporting` now provides ReportService and ComparisonService with typed
+Report (schema_version 1), ChartSeries, and persisted Comparison/Change contracts. Chart series
+include ISO sessions, Close, nullable SMA10/20/50, window_start/window_end and close_resistance.
+Run adds backward-compatible comparison=None and price_basis="split_adjusted_close" defaults.
+Report.run retains every persisted result and count; top only limits chart/presentation rows.
+Report sources/warnings/chart_error/limitation explicitly distinguish synthetic, failed, missing
+snapshot and zero-candidate cases. No ORM object or private snapshot path crosses this boundary.
+
+Comparison is bound and saved by ScanService; future clients call ComparisonService.get rather
+than computing changes. It includes semantic_version, previous_run_id, sessions, binding, reasons,
+and instrument-keyed changes with previous/current analyses. Legacy and replay comparisons are
+explicitly unavailable. WatchlistService.lookup/list and ScanQueryService.summaries provide
+owner-scoped lookup and bounded history; ReportService.series is also owner-scoped.
+
+CLI and renderer consume these services directly. Report failures use REPORT_ERROR and never
+transition a completed scan. A successful query/export operation can succeed while the historical
+run state remains PARTIAL or FAILED. HTTP routes, full public pagination, 202/Location, auth,
+idempotency and executor recovery remain Phase 4; these are not live HTTP responses.
+
+RefreshResult/RefreshItem expose resolved context, per-instrument available/updated/error/provenance/
+warnings and counts without leaking price payloads. WatchlistService.import_named owns explicit
+replacement and revision rules; transports only load the bounded input and present the result.

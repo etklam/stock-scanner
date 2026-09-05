@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="zh-Hant"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>候選報告 · {{ report.run.context.as_of_session }}</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#faf9f5;color:#24343b;font:16px/1.65 system-ui,sans-serif}
+main{max-width:1100px;margin:auto;padding:40px 24px}h1{font:600 2rem/1.25 Georgia,serif;margin:0 0 16px}
+h2{font-size:1.35rem;margin:44px 0 12px}h3{font-size:1.1rem;margin:28px 0 8px}p{max-width:75ch}
+.meta{overflow-wrap:anywhere;color:#485960;font-size:.9rem}.notice{padding:16px;background:#f4e9d5;color:#644211}
+.scroll{max-width:100%;overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:.9rem;font-variant-numeric:tabular-nums}
+th,td{text-align:left;padding:12px 10px;border-bottom:1px solid #cbd1cf;vertical-align:top}th{color:#345361}
+figure{margin:24px 0}img{width:100%;height:auto;display:block}figcaption{font-size:.85rem;color:#485960}
+code{overflow-wrap:anywhere}details{margin:12px 0}summary{cursor:pointer}summary:focus-visible{outline:2px solid #345361}
+::selection{background:#d5e4e7;color:#153e55}@media(max-width:600px){main{padding:24px 16px}h1{font-size:1.6rem}th,td{padding:9px 8px}}
+</style></head><body><main>
+<h1>Close-only 候選報告</h1>
+<p>{{ report.run.context.as_of_session }} · {{ report.run.watchlist.name }} · <strong>{{ report.run.state }}</strong></p>
+<p class="notice">{{ report.limitation }}。分數不是成功率。來源：{{ report.sources|join(', ') or 'Unavailable' }}</p>
+{% for warning in report.warnings %}<p class="notice">{{ warning }}</p>{% endfor %}
+<p class="meta">Scan {{ report.run.id }}<br>Reference session {{ report.run.context.reference_session }}<br>
+{{ report.run.rules.ruleset_id }} / {{ report.run.rules.version }} · engine {{ report.run.context.engine_version }} · {{ report.run.price_basis }}</p>
+<div class="scroll"><table><tr>{% for key in report.run.counts.model_dump() %}<th>{{ key }}</th>{% endfor %}</tr>
+<tr>{% for value in report.run.counts.model_dump().values() %}<td>{{ value }}</td>{% endfor %}</tr></table></div>
+{% if report.run.error %}<p class="notice">{{ report.run.error }}</p>{% endif %}
+{% if report.chart_error %}<p class="notice">{{ report.chart_error }}</p>{% endif %}
+<h2>候選 · 顯示 {{ report.displayed_candidates }} / {{ report.run.counts.candidate }}</h2>
+{% if not candidates %}<p>本 run 沒有候選。請同時查看狀態與資料問題；FAILED / RUNNING 不代表成功的零候選掃描。</p>{% endif %}
+{% for stage in ['FORMING','NEAR_CLOSE_RESISTANCE','CLOSE_BREAK_ABOVE','EXTENDED'] %}
+{% set group = candidates|selectattr('analysis.stage','equalto',stage)|list %}{% if group %}
+<h3>{{ stage }}</h3><div class="scroll"><table><thead><tr><th>Rank</th><th>Symbol</th><th>Score</th><th>Window sessions</th><th>前段升幅 ratio</th><th>收窄 ratio</th><th>阻力距離 ratio</th></tr></thead><tbody>
+{% for r in group %}<tr><td>{{ r.rank }}</td><td>{{ r.instrument.display_symbol }}</td><td>{{ r.analysis.score }}</td><td>{{ r.analysis.selected_window.window_sessions }}</td>
+<td>{{ r.analysis.selected_window.features.get('prior_move') }}</td><td>{{ r.analysis.features.get('contraction_ratio') }}</td><td>{{ r.analysis.selected_window.features.get('distance_to_resistance') }}</td></tr>{% endfor %}
+</tbody></table></div>
+{% for r in group %}<details><summary>{{ r.instrument.display_symbol }} · 分項分數與原因</summary><p>{{ r.analysis.selected_window.score_breakdown }}</p>
+{% for reason in r.analysis.reasons %}<p>{{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}
+{% for reason in r.analysis.selected_window.reasons %}<p>{{ reason.code }} · {{ reason.parameters }}</p>{% endfor %}</details>
+{% if images.get(r.instrument.id|string) %}<figure><img alt="{{ r.instrument.display_symbol }} Close, SMA10/20/50, selected window and close resistance" src="data:image/png;base64,{{ images[r.instrument.id|string] }}"><figcaption>整理窗口截止 reference session {{ report.run.context.reference_session }}；圖表來自本 run 的 immutable snapshot。</figcaption></figure>{% endif %}
+{% endfor %}{% endif %}{% endfor %}
+<h2>每日變化</h2><p class="meta">Baseline {{ report.comparison.previous_run_id or 'None' }} · {{ report.comparison.previous_session }} → {{ report.comparison.current_session }} · {{ report.comparison.binding }}</p>
+{% for reason in report.comparison.reasons %}<p>{{ reason }}</p>{% endfor %}
+{% for change in report.comparison.changes %}<p><strong>{{ change.symbol or 'Comparison' }}</strong> · {{ change.codes|join(', ') }} · {{ change.reasons|join(', ') }}</p>{% else %}<p>沒有記錄到變化。</p>{% endfor %}
+<h2>資料問題與排除</h2>{% for r in report.run.results if r.category != 'evaluated' %}<p>{{ r.instrument.display_symbol }} · {{ r.category }} · {% for reason in r.analysis.reasons %}{{ reason.code }} {% endfor %}</p>{% else %}<p>沒有標的資料錯誤或排除。</p>{% endfor %}
+<p class="meta">比率以小數表示：0.2 = 20%；None / null 表示無法取得，不代表零。</p>
+</main></body></html>

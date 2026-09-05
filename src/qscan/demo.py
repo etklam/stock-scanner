@@ -70,3 +70,46 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+def seed_demo(directory: Path) -> dict[str, object]:
+    """Create independent synthetic universes without replacing existing user data."""
+    from datetime import timedelta
+
+    calendar = NYSECalendar()
+    clock = FixedClock(datetime(2026, 9, 5, 12, tzinfo=UTC))
+    sessions = calendar.sessions(date(2025, 1, 1), date(2026, 9, 4))[-130:]
+    closes = [50 + i * 0.5 for i in range(88)] + [99.0, 100.0] * 20 + [100.0, 101.0]
+    provider = FixtureProvider(
+        {
+            "DEMO": RawPrices(tuple(zip(sessions, closes, strict=True))),
+            "DEMO-DOWN": RawPrices(tuple((s, 100 - i * 0.1) for i, s in enumerate(sessions))),
+        }
+    )
+    instance = bootstrap(provider, data_dir=directory, clock=clock, calendar=calendar)
+    try:
+        suffix = uuid4().hex[:12]
+        watchlist = instance.watchlists.import_content("SYNTHETIC-demo-" + suffix, b"DEMO")
+        first = instance.scans.scan(watchlist.id, as_of=sessions[-2], mode=DataMode.FORCE)
+        clock.instant += timedelta(seconds=1)
+        second = instance.scans.scan(watchlist.id, as_of=sessions[-1], mode=DataMode.FORCE)
+        partial_list = instance.watchlists.import_content(
+            "SYNTHETIC-partial-" + suffix, b"DEMO\nDEMO-MISSING"
+        )
+        partial = instance.scans.scan(partial_list.id, as_of=sessions[-1], mode=DataMode.CACHE_ONLY)
+        zero_list = instance.watchlists.import_content("SYNTHETIC-zero-" + suffix, b"DEMO-DOWN")
+        zero = instance.scans.scan(zero_list.id, as_of=sessions[-1], mode=DataMode.FORCE)
+        return {
+            "label": "SYNTHETIC / DEMO",
+            "watchlist_id": str(watchlist.id),
+            "watchlist_name": watchlist.name,
+            "as_of": sessions[-1].isoformat(),
+            "baseline_id": str(first.id),
+            "scan_id": str(second.id),
+            "partial_id": str(partial.id),
+            "zero_id": str(zero.id),
+            "provider": "fixture",
+            "data_mode": "cache_only",
+        }
+    finally:
+        instance.close()
