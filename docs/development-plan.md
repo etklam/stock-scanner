@@ -880,15 +880,30 @@ thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測�
 
 **目的：** 令安裝、維護及限制都有可重現證據。
 
-- [ ] 完成三平台 wheel installation／offline E2E matrix，記錄實測 CPU 架構。
-- [ ] 跑 benchmark，輸出硬件、套件版本、各階段耗時與 peak memory。
-- [ ] 用不同日期作人工候選／漏網抽查，固定第一個 ruleset baseline，不追逐收益最佳化。
-- [ ] 演練 DB + snapshots 一致備份、還原及 migration。
-- [ ] 補 macOS、Windows、Linux 的排程指引：使用絕對 executable／data paths，不依賴互動 shell；休市日由程式判斷。
-- [ ] 完成 README、rules、API、operations、data-quality 與 source/license notes。
-- [ ] 提交 release checklist；所有未完成事項明確列出，不將 local API 稱為公開多使用者平台。
+- [x] 三平台 wheel installation／offline E2E：GitHub CI（ubuntu/windows/macos）
+  每次 push 跑 lint/format/mypy/pytest/OpenAPI check/build/wheel smoke；
+  本機實測為 macOS arm64（見 [release checklist](release-checklist.md) 第 8 節
+  如實列出未逐項手跑的組合）。
+- [x] Benchmark：`scripts/benchmark.py` 分段量測 100–2,000 symbols，輸出硬件、
+  套件版本、各段耗時、raw samples、peak RSS 方法與限制；實測
+  `docs/benchmarks/phase5-macos-arm64.json`；1,000×504 core+ranking median 0.42s
+  （目標 ≤10s，目標而非保證，CI 不設絕對秒數門檻）。
+- [x] 人工候選抽查：`scans review-export` 產生候選 + 固定 seed 非候選對照 CSV；
+  固定 breakout-v1 baseline；**真人標記仍 pending**，不宣稱 precision/recall。
+- [x] DB + snapshots 一致備份、還原及 migration 演練：`qscan backup
+  create/verify/restore`（[ADR 0006](adr/0006-backup-format.md)），含 WAL、舊
+  schema 升級、不可信 archive、忙碌拒絕等演練測試與 wheel smoke 段。
+- [x] 排程指引：macOS launchd／Windows Task Scheduler／cron／systemd timer 範例
+  （operations.md），絕對路徑、不依賴互動 shell、休市日由日曆判斷；只提供範例，
+  不自動安裝。
+- [x] README／rules／API／operations／data-quality 現況化；備份格式 ADR；CHANGELOG
+  draft；source **license 未決定——已如實標明，不擅自指定條款**。
+- [x] Release checklist：[docs/release-checklist.md](release-checklist.md)，
+  每項附證據；未完成項（真人覆核標記、未手跑平台組合）明確列出；定位維持
+  「本地 CLI + API／個人 EOD 試用的發布候選」，不稱公開多使用者平台。
 
-**驗收：** 下節 V1 Definition of Done 全部通過，並附真實測試／benchmark 紀錄。
+**驗收：** 核心功能與可維護性證據齊備；真人覆核標記與本地多平台手跑屬已知未完成，
+見 checklist 第 5/8 節。V1 Definition of Done 對照亦記錄於該 checklist。
 
 ---
 

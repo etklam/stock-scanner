@@ -23,6 +23,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from qscan import __version__
 from qscan.adapters.report_renderer import render
 from qscan.application.contracts import ApplicationError, Comparison, Run, ScanResult
 from qscan.bootstrap import Application
@@ -794,7 +795,13 @@ def run_serve(
         scanner.close()
         return 4
     executor = ScanExecutor(scanner, stop_grace=stop_grace)
-    executor.start()
+    recovered = executor.start()
+    print(
+        f"qscan serve: engine {__version__}, provider {provider.name}, "
+        f"recovered {recovered} interrupted run(s)",
+        file=sys.stderr,
+        flush=True,
+    )
     app = create_app(
         scanner,
         token_path=token_path,

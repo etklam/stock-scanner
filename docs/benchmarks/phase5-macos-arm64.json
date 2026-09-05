@@ -1,0 +1,318 @@
+{
+  "label": "SYNTHETIC benchmark; medians are goals on the reference machine, not guarantees",
+  "environment": {
+    "commit": "0689ab6",
+    "os": "macOS-26.6-arm64-arm-64bit",
+    "architecture": "arm64",
+    "python": "3.12.12",
+    "sqlite_runtime": "3.50.4",
+    "dependencies": {
+      "pydantic": "2.13.5",
+      "sqlalchemy": "2.0.52",
+      "fastapi": "0.141.1",
+      "uvicorn": "0.52.4",
+      "numpy": "2.5.2",
+      "pandas": "2.3.3",
+      "matplotlib": "3.11.1",
+      "alembic": "1.19.2"
+    },
+    "provider_mode": "fixture (SYNTHETIC, in-memory)",
+    "seed": "deterministic-formula-v1 (no randomness)",
+    "measured_at": "2026-09-05T19:20:47.791071+00:00",
+    "notes": [
+      "Timed with time.perf_counter around end-to-end calls; median of raw samples reported.",
+      "Core segment: warm-up pass excluded, then 5 timed passes over all symbols.",
+      "Fixture provider is in-memory; segment 2 'validation' covers the real quality gate but no network. Online Yahoo performance is a different measurement.",
+      "Render cold includes one-time matplotlib font/backend setup; warm is the steady state users see on later reports.",
+      "Peak RSS per size comes from a dedicated subprocess (RUSAGE_SELF.ru_maxrss); it includes interpreter + native libraries; tracemalloc would miss NumPy memory.",
+      "Backup/verify/restore timings include hashing every entry and full integrity verification, not just copying."
+    ]
+  },
+  "core_target": "1000x504 core+ranking median <= 10s (development-plan target)",
+  "sizes": [
+    {
+      "symbols": 100,
+      "sessions": 504,
+      "core_and_ranking": {
+        "samples_seconds": [
+          0.0275,
+          0.0279,
+          0.0274,
+          0.0274,
+          0.0277
+        ],
+        "median_seconds": 0.0275
+      },
+      "market_data_obtain_cold": {
+        "samples_seconds": [
+          0.1118
+        ],
+        "median_seconds": 0.1118
+      },
+      "market_data_obtain_warm": {
+        "samples_seconds": [
+          0.1107,
+          0.1149,
+          0.1192
+        ],
+        "median_seconds": 0.1149
+      },
+      "snapshot_write": {
+        "samples_seconds": [
+          0.0009,
+          0.0008,
+          0.0008
+        ],
+        "median_seconds": 0.0008
+      },
+      "end_to_end_scan_force": {
+        "samples_seconds": [
+          0.5143,
+          0.6229,
+          0.6867
+        ],
+        "median_seconds": 0.6229
+      },
+      "report_assembly": {
+        "samples_seconds": [
+          0.0338,
+          0.0331,
+          0.0336
+        ],
+        "median_seconds": 0.0336
+      },
+      "render_html_cold_seconds": 2.9443,
+      "render_html_warm": {
+        "samples_seconds": [
+          3.8161,
+          2.3323,
+          2.1495
+        ],
+        "median_seconds": 2.3323
+      },
+      "render_html_bytes": 2226227,
+      "backup_seconds": 0.2005,
+      "verify_seconds": 0.0475,
+      "restore_seconds": 0.0633,
+      "archive_bytes": 1152243,
+      "runs": 4,
+      "peak_rss_kb": 210672,
+      "peak_rss_method": "getrusage(RUSAGE_SELF).ru_maxrss, subprocess-isolated"
+    },
+    {
+      "symbols": 500,
+      "sessions": 504,
+      "core_and_ranking": {
+        "samples_seconds": [
+          0.2254,
+          0.2002,
+          0.2128,
+          0.2014,
+          0.1944
+        ],
+        "median_seconds": 0.2014
+      },
+      "market_data_obtain_cold": {
+        "samples_seconds": [
+          1.1207
+        ],
+        "median_seconds": 1.1207
+      },
+      "market_data_obtain_warm": {
+        "samples_seconds": [
+          1.545,
+          1.1542,
+          1.0653
+        ],
+        "median_seconds": 1.1542
+      },
+      "snapshot_write": {
+        "samples_seconds": [
+          0.0014,
+          0.0013,
+          0.0012
+        ],
+        "median_seconds": 0.0013
+      },
+      "end_to_end_scan_force": {
+        "samples_seconds": [
+          8.5526,
+          8.6829,
+          5.6426
+        ],
+        "median_seconds": 8.5526
+      },
+      "report_assembly": {
+        "samples_seconds": [
+          0.2989,
+          0.3388,
+          0.3417
+        ],
+        "median_seconds": 0.3388
+      },
+      "render_html_cold_seconds": 5.1681,
+      "render_html_warm": {
+        "samples_seconds": [
+          4.4344,
+          2.7114,
+          2.6752
+        ],
+        "median_seconds": 2.7114
+      },
+      "render_html_bytes": 2414966,
+      "backup_seconds": 1.3986,
+      "verify_seconds": 0.3343,
+      "restore_seconds": 0.4649,
+      "archive_bytes": 5790036,
+      "runs": 4,
+      "peak_rss_kb": 245984,
+      "peak_rss_method": "getrusage(RUSAGE_SELF).ru_maxrss, subprocess-isolated"
+    },
+    {
+      "symbols": 1000,
+      "sessions": 504,
+      "core_and_ranking": {
+        "samples_seconds": [
+          0.4807,
+          0.4411,
+          0.423,
+          0.3875,
+          0.3687
+        ],
+        "median_seconds": 0.423
+      },
+      "market_data_obtain_cold": {
+        "samples_seconds": [
+          2.9971
+        ],
+        "median_seconds": 2.9971
+      },
+      "market_data_obtain_warm": {
+        "samples_seconds": [
+          1.749,
+          1.779,
+          2.659
+        ],
+        "median_seconds": 1.779
+      },
+      "snapshot_write": {
+        "samples_seconds": [
+          0.0027,
+          0.002,
+          0.0018
+        ],
+        "median_seconds": 0.002
+      },
+      "end_to_end_scan_force": {
+        "samples_seconds": [
+          17.2899,
+          11.3293,
+          18.4896
+        ],
+        "median_seconds": 17.2899
+      },
+      "report_assembly": {
+        "samples_seconds": [
+          0.6539,
+          0.4935,
+          0.4393
+        ],
+        "median_seconds": 0.4935
+      },
+      "render_html_cold_seconds": 4.7331,
+      "render_html_warm": {
+        "samples_seconds": [
+          4.1572,
+          3.0669,
+          7.1622
+        ],
+        "median_seconds": 4.1572
+      },
+      "render_html_bytes": 2634771,
+      "backup_seconds": 3.2878,
+      "verify_seconds": 0.6188,
+      "restore_seconds": 0.7747,
+      "archive_bytes": 11596126,
+      "runs": 4,
+      "peak_rss_kb": 323792,
+      "peak_rss_method": "getrusage(RUSAGE_SELF).ru_maxrss, subprocess-isolated"
+    },
+    {
+      "symbols": 2000,
+      "sessions": 504,
+      "core_and_ranking": {
+        "samples_seconds": [
+          1.0045,
+          0.7338,
+          0.6588,
+          0.6631,
+          0.6319
+        ],
+        "median_seconds": 0.6631
+      },
+      "market_data_obtain_cold": {
+        "samples_seconds": [
+          5.0923
+        ],
+        "median_seconds": 5.0923
+      },
+      "market_data_obtain_warm": {
+        "samples_seconds": [
+          3.9016,
+          3.3446,
+          3.388
+        ],
+        "median_seconds": 3.388
+      },
+      "snapshot_write": {
+        "samples_seconds": [
+          0.0047,
+          0.0022,
+          0.0019
+        ],
+        "median_seconds": 0.0022
+      },
+      "end_to_end_scan_force": {
+        "samples_seconds": [
+          72.9821,
+          35.4099,
+          80.7347
+        ],
+        "median_seconds": 72.9821
+      },
+      "report_assembly": {
+        "samples_seconds": [
+          3.5488,
+          3.954,
+          4.4531
+        ],
+        "median_seconds": 3.954
+      },
+      "render_html_cold_seconds": 9.2999,
+      "render_html_warm": {
+        "samples_seconds": [
+          14.2738,
+          10.4889,
+          11.1942
+        ],
+        "median_seconds": 11.1942
+      },
+      "render_html_bytes": 3074346,
+      "backup_seconds": 13.0109,
+      "verify_seconds": 5.4703,
+      "restore_seconds": 4.9825,
+      "archive_bytes": 22975600,
+      "runs": 4,
+      "peak_rss_kb": 530160,
+      "peak_rss_method": "getrusage(RUSAGE_SELF).ru_maxrss, subprocess-isolated"
+    }
+  ],
+  "api_slow_provider": {
+    "symbols": 2,
+    "submit_accepted_seconds": 0.0839,
+    "status_get_median_seconds": 0.0657,
+    "status_get_samples": 4,
+    "final_state": "SUCCEEDED",
+    "notes": "Worker parked in a controllable slow provider while status, results and idempotent replay stayed served; no duplicate queue entries."
+  }
+}

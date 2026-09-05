@@ -1,10 +1,14 @@
 # Close-only Setup Scanner
 
-**CLI + 本地 HTTP API**：匯入名單、同步（CLI）或佇列（API）掃描、歷史查詢、
-固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、immutable snapshot replay。
-鎖定依賴下 Yahoo 為 **EOD_TRIAL**：可掃描已完成交易日、metadata 已驗證的美股／ETF。
-真實三標的流程已通過；盤中與 production 行情未放行，見 [驗收決定](docs/adr/0004-eod-trial-acceptance.md)。
-規則與階段邊界見 [開發計劃](docs/development-plan.md)，API 合約見 [api.md](docs/api.md)。
+**現況（0.1.0rc1，2026-09-06）：** 可安裝、可日常使用的本地 V1 發布候選——
+**CLI + loopback HTTP API**，個人美股 EOD 試用。功能：匯入名單、同步（CLI）或
+佇列（API）掃描、歷史查詢、固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、
+immutable snapshot replay、一致備份／驗證／還原、排程範例與人工覆核樣本匯出。
+Yahoo 在鎖定依賴下為 **EOD_TRIAL**：只掃已完成交易日、metadata 已驗證的美股／ETF；
+盤中與 production 行情未放行（[驗收決定](docs/adr/0004-eod-trial-acceptance.md)）。
+明確不提供：下單、績效回測、多使用者／公開部署、自動交易。
+API 合約見 [api.md](docs/api.md)；備份／排程見 [operations](docs/operations.md)；
+本輪證據總表見 [release checklist](docs/release-checklist.md)。
 
 ## 安裝
 
@@ -176,6 +180,33 @@ QUEUED 上限 20（429 `QUEUE_LIMIT_REACHED`）；強制 kill 後重啟由 start
 executor busy（exit 4）；read-only 查詢／報告不受影響。完整合約與錯誤碼見
 [api.md](docs/api.md) 與 [openapi.json](docs/openapi.json)；
 鎖／recovery 營運細節見 [operations](docs/operations.md)。
+
+## D. 備份、還原與日常排程
+
+**備份前先停 serve／scan**（backup 自己也會檢查並如實拒絕）：
+
+```sh
+uv run qscan --data-dir "$HOME/qscan-personal" backup create --output "$HOME/backups/qscan-daily.zip"
+uv run qscan backup verify "$HOME/backups/qscan-daily.zip"
+uv run qscan backup restore "$HOME/backups/qscan-daily.zip" --destination "$HOME/qscan-restored"
+```
+
+備份含完整業務 DB 與被引用 snapshots（SQLite backup API，含未 checkpoint 的 WAL），
+**未加密**——內含私人資料，請自行安全保存；checksum 是完整性不是加密。還原只到
+全新目錄；不 migration（舊 schema 用 `qscan init` 明確升級）、不自動執行 queued
+jobs；還原後第一次 init/serve 建立新 token。細節與邊界見
+[ADR 0006](docs/adr/0006-backup-format.md) 與 [operations](docs/operations.md)。
+
+**排程**：`scripts/daily_scan.py` 是唯一的排程入口——serve 在跑就走 HTTP（重試沿用
+同一 idempotency key），沒跑就退回獨立 CLI；同日重觸發不重跑，日期由市場日曆判斷。
+launchd／schtasks／cron／systemd timer 完整範例（絕對路徑、無 venv 依賴）見
+[operations](docs/operations.md)；範例不會被本工具自動安裝。
+
+**人工覆核樣本**（工具；標籤留空待人類填寫，不宣稱已驗證的 precision/recall）：
+
+```sh
+uv run qscan --data-dir "$HOME/qscan-personal" scans review-export "$SCAN_ID" --output ./review.csv --non-candidates 10 --seed 7
+```
 
 ## 驗證與開發入口
 

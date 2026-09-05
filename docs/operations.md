@@ -200,3 +200,85 @@ Queue 以 DB 為唯一事實來源：QUEUED 上限預設 20，超限 429；FIFO 
 運行中觀察：`/health/ready` 回 DB 與 executor 狀態；`doctor` 的 lock 檢查在
 serve 運行時會如實顯示 BUSY。log/redaction：server 不記錄 request body 與
 header；token 只存在 api-token.json（0600），錯誤回應不含 stack 與本機路徑。
+
+## Phase 5：備份、還原、排程與診斷
+
+### 一致備份 / 驗證 / 還原（[ADR 0006](adr/0006-backup-format.md)）
+
+備份前**先停止** `serve` 與所有 scan/refresh/migration（backup 會取得 executor.lock，
+佔用中如實回 `EXECUTOR_LOCKED`／exit 4）。可直接複製的操作：
+
+```sh
+# 備份（輸出不可在 data directory 內、不可覆蓋既有檔）
+uv run qscan --data-dir "$HOME/qscan-personal" backup create --output "$HOME/backups/qscan-2026-09-06.zip"
+
+# 離線驗證（不連網、不動資料；JSON 報告含 counts 與 warnings）
+uv run qscan backup verify "$HOME/backups/qscan-2026-09-06.zip"
+
+# 還原到全新目錄（必須不存在；完成後第一次 init/serve 建立新 token）
+uv run qscan backup restore "$HOME/backups/qscan-2026-09-06.zip" --destination "$HOME/qscan-restored"
+uv run qscan --data-dir "$HOME/qscan-restored" init        # 如 schema 較舊，明確升級
+```
+
+備份**未加密**：內含私人名單與價格歷史，請自行安全保存；checksum 只是完整性檢查。
+還原不會執行 queued jobs——QUEUED 由還原後第一次 `serve` 啟動時繼續，遺留 RUNNING
+由同一次 startup recovery 收尾為 `FAILED/WORKER_INTERRUPTED`；舊 token 不隨備份
+遷移，新目錄一律建立新本機憑證。
+
+### 日常排程（兩條路徑，不可混淆）
+
+**規則：** `serve` 在跑 → 只用 HTTP client 提交；serve 沒跑 → 用獨立 CLI scan。
+**永遠不要**在 serve 運行時對同一資料目錄直接跑 CLI `scan`（會 exit 4）。
+日期由內建市場日曆以「已完成收市 + buffer」判斷，程式從不假設本地今天＝美股今天；
+休市日會解析到前一個完成 session。`scripts/daily_scan.py` 封裝此規則：同日重觸發
+不重跑（state file）、重試沿用同一 idempotency key、retry/poll 有上限、token 只進
+Authorization header（不進 URL／log／排程定義）、exit 0/1/2/3/4 與 CLI 一致。
+
+macOS launchd（`~/Library/LaunchAgents/com.qscan.daily.plist`）：
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.qscan.daily</string>
+  <key>ProgramArguments</key><array>
+    <string>/Users/USER/.local/bin/uv</string><string>run</string><string>python</string>
+    <string>/Users/USER/src/stock-scanner/scripts/daily_scan.py</string>
+    <string>--data-dir</string><string>/Users/USER/qscan-personal</string>
+    <string>--watchlist</string><string>us-growth</string>
+  </array>
+  <key>StartCalendarInterval</key><dict>
+    <key>Hour</key><integer>9</integer><key>Minute</key><integer>15</integer>
+  </dict>
+  <key>StandardErrorPath</key><string>/Users/USER/qscan-personal/daily.log</string>
+</dict></plist>
+```
+
+Windows Task Scheduler（`schtasks /create` 一行，可放進佈署筆記；用絕對路徑）：
+
+```bat
+schtasks /create /tn "qscan daily" /tr "C:\Python312\python.exe C:\src\stock-scanner\scripts\daily_scan.py --data-dir C:\qscan-personal --watchlist us-growth" /sc daily /st 09:15
+```
+
+Linux cron（`crontab -e`；systemd timer 亦可，同樣用絕對路徑與 `Environment=PYTHONUNBUFFERED=1`）：
+
+```cron
+15 9 * * 1-5  /usr/bin/python3 /opt/stock-scanner/scripts/daily_scan.py --data-dir /home/user/qscan-personal --watchlist us-growth >> /home/user/qscan-personal/daily.log 2>&1
+```
+
+注意：美股收市（17:00 ET）對應香港時間清晨；排程時間請自行對齊並預留數小時。
+範例**只提供檔案內容**，本工具不會安裝、啟用或修改任何使用者系統排程。
+missed schedule：launchd/cron 不補跑（可改用 launchd `StartCalendarInterval` 以外的
+輪詢寫法自行處理）；同一天重複觸發由 state file 擋下；部分失敗（exit 3）仍記錄
+session，可用 `--force` 重跑。排程不執行 `uv sync`／依賴升級。
+
+### 診斷
+
+- serve 啟動（stderr）：engine 版本、provider、recovered run 數。
+- worker（stderr）：每個 job 的失敗原因與第幾次嘗試、退避、放棄（fail_queued）、
+  開機 recovery 動作——不吞例外。
+- backup/restore（stderr）：開始、完成；驗證失敗時說明資料未受影響。
+- JSON stdout 永遠只有一份 JSON；診斷全在 stderr。token／Authorization／完整價格
+  payload 不出現在任何輸出。
+- `doctor`：預設離線、只做輕量檢查；`--online` 才做一次外部診斷（仍不改 gate）。
+  深度全庫掃描未提供——如需要，直接 `backup verify`（含 integrity/FK/引用檢查）。

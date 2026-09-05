@@ -45,9 +45,13 @@
 
 GET 一律唯讀：不下載行情、不建立任務、不寫報告檔案；歷史 series/export 只讀該
 run 的 snapshot，缺失／損壞明確回錯，不退回最新 cache。cursor 為 HMAC 簽名的
-opaque token，綁定資源、principal、filter 與排序；跨 owner／篡改／不符的 cursor
-回 400。所有資源查詢均 owner-scoped，其他 principal 的資源一律 404，不洩漏
-存在性。
+opaque token，綁定資源、principal、filter、排序與 **scan id + 排序 schema 版本**；
+跨 owner／跨 run／篡改／不符的 cursor 回 400（Phase 4.1 起 results cursor 綁定
+所屬 run——A run 的 cursor 用在 B run 會被拒，舊版 cursor 一律失效需重新取得第一頁）。
+所有資源查詢均 owner-scoped，其他 principal 的資源一律 404，不洩漏
+存在性。OpenAPI 契約（`docs/openapi.json`）與實際行為由 CI
+`scripts/openapi_snapshot.py --check` 每次驗證：202=`ScanAccepted`、同 key 重試=
+200 `ScanStatusOut`、changes=`Comparison`、export=`text/csv`、422=`ErrorEnvelope`。
 
 ## 提交掃描
 

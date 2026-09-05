@@ -178,24 +178,37 @@ def main() -> None:
         executable = binary / ("qscan.exe" if os.name == "nt" else "qscan")
         data_dir = directory / "資料 data"
 
-        def invoke(*args: str) -> object:
+        def invoke(invoke_data_dir: Path, *args: str, expect: int = 0) -> object:
             result = subprocess.run(
-                [str(executable), "--data-dir", str(data_dir), "--provider", "fixture", *args],
+                [
+                    str(executable),
+                    "--data-dir",
+                    str(invoke_data_dir),
+                    "--provider",
+                    "fixture",
+                    *args,
+                ],
                 cwd=directory,
                 check=False,
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
             )
-            assert result.returncode == 0, (args, result.stdout, result.stderr)
+            assert result.returncode == expect, (
+                args,
+                result.returncode,
+                result.stdout,
+                result.stderr,
+            )
             return json.loads(result.stdout)
 
-        invoke("init")
-        assert invoke("init")["api_token"] == "kept"  # rerun never rotates silently
-        demo = invoke("demo")
+        invoke(data_dir, "init")
+        assert invoke(data_dir, "init")["api_token"] == "kept"  # rerun never rotates silently
+        demo = invoke(data_dir, "demo")
         assert isinstance(demo, dict)
-        assert invoke("watchlist", "list")
+        assert invoke(data_dir, "watchlist", "list")
         run = invoke(
+            data_dir,
             "scan",
             "--watchlist",
             demo["watchlist_id"],
@@ -208,12 +221,12 @@ def main() -> None:
         )
         assert isinstance(run, dict)
         identity = run["id"]
-        assert invoke("scans", "show", identity, "--format", "json") == run
-        invoke("scans", "list")
-        invoke("scans", "changes", identity)
+        assert invoke(data_dir, "scans", "show", identity, "--format", "json") == run
+        invoke(data_dir, "scans", "list")
+        invoke(data_dir, "scans", "changes", identity)
         output = directory / "報告 output"
         for format in ("json", "csv", "html"):
-            invoke("report", identity, "--format", format, "--output", str(output))
+            invoke(data_dir, "report", identity, "--format", format, "--output", str(output))
         report = json.loads((output / f"scan-{identity}.json").read_text(encoding="utf-8"))
         assert report["run"]["counts"]["candidate"] == 1 and report["charts"]
         with (output / f"scan-{identity}.csv").open(encoding="utf-8-sig", newline="") as stream:
@@ -225,10 +238,10 @@ def main() -> None:
         image = re.search(r'data:image/png;base64,([^" ]+)', html)
         assert image and base64.b64decode(image[1]).startswith(b"\x89PNG\r\n\x1a\n")
         assert "SYNTHETIC" in html and "https://" not in html
-        replay = invoke("replay", identity, "--format", "json")
+        replay = invoke(data_dir, "replay", identity, "--format", "json")
         assert isinstance(replay, dict) and replay["source_run_id"] == identity
         assert replay["results"] == run["results"]
-        diagnosis = invoke("doctor")
+        diagnosis = invoke(data_dir, "doctor")
         assert isinstance(diagnosis, dict) and diagnosis["local_healthy"]
         assert diagnosis["yahoo_release"] == "EOD_TRIAL"
         print(
@@ -255,6 +268,71 @@ def main() -> None:
         print(
             "Installed-wheel HTTP smoke passed: "
             "serve/auth/watchlist/202+idempotency/poll/results/detail/series/changes/csv/restart"
+        )
+
+        # Backup -> verify -> restore into a fresh directory; history, reports,
+        # exact replay and the API keep working there with new credentials, and
+        # the original idempotency key still resolves to the original run id.
+        refusing = invoke(
+            data_dir,
+            "backup",
+            "create",
+            "--output",
+            str(data_dir / "self.zip"),
+            expect=2,
+        )
+        assert refusing["error"]["code"] == "VALIDATION_ERROR"  # never inside the source dir
+        archive = directory / "備份" / "wheel-smoke.zip"
+        created = invoke(data_dir, "backup", "create", "--output", str(archive))
+        assert created["manifest"]["counts"]["runs"] >= 3, created["manifest"]["counts"]
+        verified = invoke(data_dir, "backup", "verify", str(archive))
+        assert verified["valid"] is True
+        restored_dir = directory / "資料 restored"
+        restored = invoke(
+            data_dir, "backup", "restore", str(archive), "--destination", str(restored_dir)
+        )
+        assert restored["token"] == "created"
+        new_token = json.loads((restored_dir / "api-token.json").read_text(encoding="utf-8"))[
+            "token"
+        ]
+        assert (
+            new_token
+            != json.loads((data_dir / "api-token.json").read_text(encoding="utf-8"))["token"]
+        )
+        restored_run = invoke(restored_dir, "scans", "show", identity, "--format", "json")
+        assert restored_run["counts"] == run["counts"] and restored_run["state"] == run["state"]
+        restored_replay = invoke(restored_dir, "replay", identity, "--format", "json")
+        assert restored_replay["source_run_id"] == identity
+        assert restored_replay["results"] == run["results"]  # exact replay content
+        invoke(restored_dir, "report", identity, "--format", "csv", "--output", str(output))
+        restored_process, restored_base = start_server(executable, restored_dir, directory)
+        try:
+            status, document, _ = http_json(
+                "GET", f"{restored_base}/api/v1/scans/{scan_id}", new_token
+            )
+            assert status == 200 and document["state"] == "SUCCEEDED"
+            status, _, _ = http_json("GET", f"{restored_base}/api/v1/scans/{scan_id}", "wrong")
+            assert status == 401  # the old credential is not carried over
+            status, replayed, _ = http_json(
+                "POST",
+                f"{restored_base}/api/v1/scans",
+                new_token,
+                {
+                    "watchlist_id": document["watchlist_id"],
+                    "as_of_session": "2026-09-04",
+                    "data_mode": "force",
+                },
+                key="wheel-smoke-idempotency-key-0001",
+            )
+            assert status == 200 and replayed["id"] == scan_id  # idempotency survived restore
+        finally:
+            restored_process.terminate()
+            restored_process.wait(30)
+            if restored_process.poll() is None:
+                restored_process.kill()
+        print(
+            "Installed-wheel backup smoke passed: "
+            "create-refusal/create/verify/restore/new-token/history/report/replay/API+idempotency"
         )
 
 

@@ -19,7 +19,7 @@ from qscan import __version__
 from qscan.adapters.provider_release import yahoo_release
 from qscan.application.contracts import ApplicationError, Run
 from qscan.bootstrap import Application
-from qscan.domain.models import DataMode, RunState
+from qscan.domain.models import DataMode, ErrorCode, RunState
 
 
 class Output(StrEnum):
@@ -313,6 +313,39 @@ def changes(
 ) -> None:
     with application(ctx, readonly=True) as instance:
         emit(instance.comparisons.get(scan_id))
+
+
+@scans.command("review-export")
+def review_export(
+    ctx: typer.Context,
+    scan_id: UUID,
+    output: Annotated[Path, typer.Option(help="CSV path for the review sheet.")],
+    non_candidates: Annotated[int, typer.Option(min=0, max=200)] = 10,
+    seed: Annotated[int, typer.Option()] = 7,
+) -> None:
+    """Export candidates plus a seeded non-candidate control sample for human review."""
+    from qscan.application.review import review_samples, write_review_csv
+
+    with application(ctx, readonly=True) as instance:
+        run = instance.queries.get(scan_id)
+        if run.state not in (RunState.SUCCEEDED, RunState.PARTIAL):
+            raise ApplicationError(
+                ErrorCode.SCAN_NOT_READY, "Review export needs a finished run with evaluations"
+            )
+        samples = review_samples(run, non_candidates=non_candidates, seed=seed)
+        path = write_review_csv(samples, output)
+        emit(
+            {
+                "scan_id": str(scan_id),
+                "output": str(path.resolve()),
+                "candidate_count": samples["candidate_count"],
+                "non_candidate_sampled": samples["non_candidate_sampled"],
+                "non_candidate_pool": samples["non_candidate_pool"],
+                "excluded_count": samples["excluded_count"],
+                "data_errors": samples["data_errors"],
+                "labels_pending": samples["labels"],
+            }
+        )
 
 
 @app.command()

@@ -285,3 +285,44 @@ results／snapshot 可讀、新 queue 欄位可用）。
 - 公開部署所需之真實身份/授權、TLS、多使用者資料授權、負載驗證（第 11.2 節）。
 - Yahoo 盤中／production 行情、公開再分發授權（gate 維持 EOD_TRIAL）。
 - 使用者取消任務 API、自動重跑、多 worker、PostgreSQL——依計劃延後。
+
+---
+
+## Phase 4.1 驗收（2026-09-06，commit da4fefa）
+
+外部 review 對 5bcb4e1 提出 7 項；逐項獨立核實後 6 項屬實、1 項（streamed body
+500）初判推翻、其後以 Windows CI 實測證實 review 為對（FastAPI route body 讀取會
+把 receive 例外包成 HTTP 400）。修復與證據：
+
+- **Shutdown ownership**：`run_serve` 停止超時改為 `os._exit(1)`——worker 與
+  ownership lock 同生同死；真實 `run_serve` subprocess 測試
+  （`test_shutdown_timeout_exits_process_and_releases_ownership`）在舊碼會 hang、
+  新碼 exit 1 + 鎖立即可取得 + 下次啟動 recovery 收尾。
+- **Worker 錯誤邊界**：pre-claim 失敗退避 + 每任務 5 次上限（`fail_queued` CAS），
+  poison job 不再熱循環卡死隊列（`test_pre_claim_failure_backs_off_then_fails_poison_job`，
+  舊碼無限循環）；post-claim（baseline bind）失敗必落 FAILED
+  （`test_post_claim_bind_failure_marks_run_failed`，舊碼卡 RUNNING）。
+- **終態不變量**：recovery 清 progress、封 counts（真 kill -9 crash 測試加入斷言）；
+  recover 遇不可讀 document 改為 abort+rollback，不再寫入無法解析的偽 Run；
+  零有效 evaluation 的 FAILED run 帶 `error=SCAN_FAILED` 與原因分佈 warning。
+- **執行身份**：queued run 記錄 provider；engine/provider 不符以
+  `EXECUTION_INCOMPATIBLE` 拒絕執行且 fixture provider 零呼叫。
+- **API 合約**：results cursor 綁 scan id + sort version（cross-run cursor 400，
+  舊碼 200）；OpenAPI 記錄 ScanAccepted 202／idempotent 200（ScanStatusOut）／
+  Comparison／text/csv+headers／ErrorEnvelope 422（`test_openapi_contract_matches_wiring`）。
+- 十個 Phase 4.1 regression tests 中六個以 `git stash` 實證在 5bcb4e1 全部失敗。
+
+## Phase 5 驗收（2026-09-06，本地 V1 發布候選）
+
+- 執行結果、備份演練、效能實測、live provider、安全檢查、產物與未完成項：
+  全部彙總於 [release-checklist.md](release-checklist.md)，不在此重複。
+- 新增自動化：`tests/integration/test_phase5_backup.py`（10）、
+  `test_phase5_operations.py`（2）、`test_phase5_review.py`（1）；全套 227 passed。
+- Windows shutdown 測試跨平台修復：console Ctrl+C 語義（CREATE_NEW_PROCESS_GROUP
+  + `SetConsoleCtrlHandler(None, False)`，harness-only），三平台 CI run
+  33986436893 起全綠。
+- Live Yahoo smoke（2026-09-04 session）：`docs/acceptance/phase5-live-smoke-2026-09-06.json`
+  ——3/3 evaluated、1 candidate、cache_only 與 force 一致、exact replay hash 相同、
+  refresh 3/3；gate 維持 EOD_TRIAL。
+- 人工覆核：`scans review-export` 工具交付；**真人標記 pending**，不宣稱效用數字。
+- License 未決定：repository 無 LICENSE、pyproject 無 license 欄位，文件如實標明。

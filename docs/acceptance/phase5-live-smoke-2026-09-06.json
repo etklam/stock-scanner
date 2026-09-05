@@ -1,0 +1,142 @@
+{
+  "at": "2026-09-05T19:25:26.009262+00:00",
+  "as_of": "2026-09-04",
+  "commands": [
+    {
+      "args": [
+        "init"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "watchlist",
+        "import",
+        "--name",
+        "live-acceptance",
+        "--file",
+        "/tmp/qscan-live-accept-0906b/personal.txt"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "data",
+        "refresh",
+        "--watchlist",
+        "70f8fe69-35bd-4861-9a42-fd4e0318d38a",
+        "--as-of",
+        "2026-09-04"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "scan",
+        "--watchlist",
+        "70f8fe69-35bd-4861-9a42-fd4e0318d38a",
+        "--as-of",
+        "2026-09-04",
+        "--format",
+        "json"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "report",
+        "1e550230-4728-409f-8935-f42e761ac184",
+        "--format",
+        "json",
+        "--output",
+        "/tmp/qscan-live-accept-0906b/reports"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "report",
+        "1e550230-4728-409f-8935-f42e761ac184",
+        "--format",
+        "csv",
+        "--output",
+        "/tmp/qscan-live-accept-0906b/reports"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "report",
+        "1e550230-4728-409f-8935-f42e761ac184",
+        "--format",
+        "html",
+        "--output",
+        "/tmp/qscan-live-accept-0906b/reports"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "scan",
+        "--watchlist",
+        "70f8fe69-35bd-4861-9a42-fd4e0318d38a",
+        "--as-of",
+        "2026-09-04",
+        "--data-mode",
+        "cache_only",
+        "--format",
+        "json"
+      ],
+      "exit": 0
+    },
+    {
+      "args": [
+        "replay",
+        "1e550230-4728-409f-8935-f42e761ac184",
+        "--format",
+        "json"
+      ],
+      "exit": 0
+    }
+  ],
+  "state": "SUCCEEDED",
+  "counts": {
+    "requested": 3,
+    "evaluated": 3,
+    "excluded": 0,
+    "data_error": 0,
+    "candidate": 1
+  },
+  "metadata": [
+    {
+      "id": "2e2ce55a-c69c-5b16-a6a1-a64a43bc10fb",
+      "display_symbol": "MSFT",
+      "provider_symbol": "MSFT",
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "instrument_type": "EQUITY"
+    },
+    {
+      "id": "1d58572e-0199-574b-8c1e-25dd5498339a",
+      "display_symbol": "AAPL",
+      "provider_symbol": "AAPL",
+      "exchange": "NASDAQ",
+      "currency": "USD",
+      "instrument_type": "EQUITY"
+    },
+    {
+      "id": "5171ef60-664f-5d83-81a7-cab6458eee17",
+      "display_symbol": "SPY",
+      "provider_symbol": "SPY",
+      "exchange": "NYSE",
+      "currency": "USD",
+      "instrument_type": "ETF"
+    }
+  ],
+  "input_hash": "9ffc4a6500a26777e1c3bf56185e99a928ea0052881297da16039f6a1e0d18ec",
+  "cache_input_hash": "9ffc4a6500a26777e1c3bf56185e99a928ea0052881297da16039f6a1e0d18ec",
+  "replay_input_hash": "9ffc4a6500a26777e1c3bf56185e99a928ea0052881297da16039f6a1e0d18ec",
+  "replay_exact_results": true,
+  "cache_equal_results": true,
+  "refresh_successful": 3
+}
