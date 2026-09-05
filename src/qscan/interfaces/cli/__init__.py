@@ -418,9 +418,7 @@ def backup_create(
     ctx: typer.Context,
     output: Annotated[
         Path,
-        typer.Option(
-            help="Archive path; must not exist and must live outside the data directory."
-        ),
+        typer.Option(help="Archive path; must not exist and must live outside the data directory."),
     ],
 ) -> None:
     """Consistently back up an idle data directory; refuse if serve/scan/migration owns it."""
@@ -448,9 +446,7 @@ def verify(ctx: typer.Context, archive: Path) -> None:
 def restore(
     ctx: typer.Context,
     archive: Path,
-    destination: Annotated[
-        Path, typer.Option(help="New data directory; it must not exist.")
-    ],
+    destination: Annotated[Path, typer.Option(help="New data directory; it must not exist.")],
 ) -> None:
     """Restore an archive into a fresh directory; a new local token is created."""
     import sys
