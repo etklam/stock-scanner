@@ -6,6 +6,7 @@ sync function doing short DB work, and scans execute on the dedicated worker thr
 
 import hashlib
 import json
+import os
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -23,7 +24,7 @@ from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoin
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from qscan.adapters.report_renderer import render
-from qscan.application.contracts import ApplicationError, Run, ScanResult
+from qscan.application.contracts import ApplicationError, Comparison, Run, ScanResult
 from qscan.bootstrap import Application
 from qscan.domain.models import ErrorCode, RunState, Stage
 from qscan.domain.rules import RuleConfig
@@ -55,6 +56,9 @@ MAX_BODY_BYTES = 1_000_000
 MAX_CURSOR_LIMIT = 200
 DEFAULT_CURSOR_LIMIT = 50
 MAX_KEY_LENGTH = 128
+# Cursor payload schema version: any pagination/sort change must bump it so old
+# cursors die loudly instead of paginating new data with stale semantics.
+_CURSOR_VERSION = 1
 
 _STATUS_OF: dict[ErrorCode, int] = {
     ErrorCode.NOT_FOUND: 404,
@@ -138,7 +142,16 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class _BodyTooLarge(Exception): ...
+class _BodyTooLarge(StarletteHTTPException):
+    """Body exceeded the limit mid-stream.
+
+    Subclasses StarletteHTTPException(413) on purpose: FastAPI's route handler
+    re-raises HTTPExceptions but wraps any other receive error in a generic
+    400, so a plain Exception would surface as 400/500 instead of 413.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(status_code=413, detail="Request body exceeds the configured limit")
 
 
 class BodyLimitMiddleware:
@@ -209,6 +222,7 @@ async def application_handler(request: Request, exc: ApplicationError) -> JSONRe
 
 async def http_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
     mapping = {
+        400: (ErrorCode.VALIDATION_ERROR, "Malformed request"),
         404: (ErrorCode.NOT_FOUND, "Resource not found"),
         405: (ErrorCode.METHOD_NOT_ALLOWED, "HTTP method not allowed on this path"),
         413: (ErrorCode.PAYLOAD_TOO_LARGE, "Request body exceeds the configured limit"),
@@ -458,7 +472,20 @@ def create_app(
             headers={"Location": f"/api/v1/scans/{identity}"},
         )
 
-    @app.post("/api/v1/scans", status_code=202)
+    @app.post(
+        "/api/v1/scans",
+        status_code=202,
+        responses={
+            202: {
+                "model": ScanAccepted,
+                "description": "Scan accepted for asynchronous execution",
+            },
+            200: {
+                "model": ScanStatusOut,
+                "description": "Idempotency-key replay: current status of the original scan",
+            },
+        },
+    )
     def submit_scan(
         api: Principal,
         request: Request,
@@ -510,7 +537,7 @@ def create_app(
         after = None
         if cursor is not None:
             payload = cursors.decode_cursor(cursor, secret, "scans", authenticator.principal)
-            if payload.get("f") != filters:
+            if payload.get("v") != _CURSOR_VERSION or payload.get("f") != filters:
                 raise ApplicationError(
                     ErrorCode.VALIDATION_ERROR, "Cursor does not match this query"
                 )
@@ -521,7 +548,14 @@ def create_app(
             last = page[-1]
             key = [last.requested_at.isoformat(), str(last.id)]
             next_cursor = cursors.encode_cursor(
-                {"r": "scans", "p": authenticator.principal, "f": filters, "k": key}, secret
+                {
+                    "r": "scans",
+                    "v": _CURSOR_VERSION,
+                    "p": authenticator.principal,
+                    "f": filters,
+                    "k": key,
+                },
+                secret,
             )
         return ScansPage(items=[status_out(run) for run in page], next_cursor=next_cursor)
 
@@ -569,6 +603,8 @@ def create_app(
         after = None
         if cursor is not None:
             payload = cursors.decode_cursor(cursor, secret, "results", authenticator.principal)
+            if payload.get("v") != _CURSOR_VERSION or payload.get("s") != str(identity):
+                raise ApplicationError(ErrorCode.VALIDATION_ERROR, "Cursor does not match this run")
             if payload.get("f") != {"stage": stage, "candidate": candidate}:
                 raise ApplicationError(
                     ErrorCode.VALIDATION_ERROR, "Cursor does not match this query"
@@ -585,6 +621,8 @@ def create_app(
             next_cursor = cursors.encode_cursor(
                 {
                     "r": "results",
+                    "v": _CURSOR_VERSION,
+                    "s": str(identity),
                     "p": authenticator.principal,
                     "f": {"stage": stage, "candidate": candidate},
                     "k": key,
@@ -630,14 +668,39 @@ def create_app(
             as_of_session=run.context.as_of_session,
         )
 
-    @app.get("/api/v1/scans/{identity}/changes")
+    @app.get(
+        "/api/v1/scans/{identity}/changes",
+        responses={
+            200: {
+                "model": Comparison,
+                "description": "Persisted comparison against the bound baseline run",
+            }
+        },
+    )
     def changes(api: Principal, identity: UUID) -> JSONResponse:
         published(api.repository.run_summary(identity))
         comparison = api.comparisons.get(identity)
         # The persisted binding is returned as-is; baselines are never reselected.
         return JSONResponse(content=comparison.model_dump(mode="json"))
 
-    @app.get("/api/v1/scans/{identity}/export")
+    @app.get(
+        "/api/v1/scans/{identity}/export",
+        response_class=Response,
+        responses={
+            200: {
+                "description": "CSV report download",
+                "content": {"text/csv": {"schema": {"type": "string", "format": "binary"}}},
+                "headers": {
+                    "Content-Disposition": {
+                        "schema": {"type": "string"},
+                        "description": "Attachment filename for the scan report",
+                    },
+                    "X-Scan-State": {"schema": {"type": "string"}},
+                    "X-Result-Count": {"schema": {"type": "integer"}},
+                },
+            }
+        },
+    )
     def export_csv(
         api: Principal,
         identity: UUID,
@@ -666,6 +729,35 @@ def create_app(
             },
         )
 
+    # The default OpenAPI document describes 422s as Starlette's HTTPValidationError,
+    # but every validation failure actually returns the ErrorEnvelope below; fix the
+    # contract in one place so the served and snapshotted schemas match the wire.
+    original_openapi = app.openapi
+
+    def openapi_with_error_envelope() -> dict[str, Any]:
+        schema = original_openapi()
+        components = schema["components"]["schemas"]
+        components.pop("HTTPValidationError", None)
+        components.pop("ValidationError", None)
+        envelope = ErrorEnvelope.model_json_schema(ref_template="#/components/schemas/{model}")
+        for key in ("$defs", "definitions"):
+            components.update(envelope.pop(key, {}))
+        components["ErrorEnvelope"] = envelope
+
+        def replace(node: Any) -> None:
+            if isinstance(node, dict):
+                if node.get("$ref") == "#/components/schemas/HTTPValidationError":
+                    node["$ref"] = "#/components/schemas/ErrorEnvelope"
+                for value in node.values():
+                    replace(value)
+            elif isinstance(node, list):
+                for value in node:
+                    replace(value)
+
+        replace(schema)
+        return schema
+
+    app.openapi = openapi_with_error_envelope  # type: ignore[method-assign]
     return app
 
 
@@ -712,7 +804,6 @@ def run_serve(
     )
     if created:
         print(f"Local API token created at {token_path}", file=sys.stderr, flush=True)
-    finished = True
     try:
         uvicorn.run(
             app,
@@ -723,20 +814,24 @@ def run_serve(
             timeout_graceful_shutdown=int(stop_grace),
         )
     finally:
-        finished = executor.stop()
-        if finished:
+        if executor.stop():
             with suppress(Exception):
                 ownership.release()
             scanner.close()
         else:
-            # Never release the ownership lock or dispose the engine while the
-            # worker may still write; the next startup recovery finalizes.
+            # The worker thread is non-daemon and still writing: returning would
+            # drop the lock reference, filelock's __del__ would force-release it,
+            # and a second serve could own the directory mid-write. Exit the
+            # process so worker and lock die together; the RUNNING scan is
+            # recovered as WORKER_INTERRUPTED by the next startup.
             print(
-                "Worker still busy; leaving recovery to the next startup",
+                "Worker still busy after the stop grace; exiting now. The running "
+                "scan is recovered as WORKER_INTERRUPTED on the next startup.",
                 file=sys.stderr,
                 flush=True,
             )
-    return 0 if finished else 1
+            os._exit(1)
+    return 0
 
 
 def emit_error(code: str, message: str) -> None:

@@ -4,6 +4,7 @@ import csv
 import io
 import math
 import re
+from collections import Counter
 from collections.abc import Callable, Sequence
 from datetime import UTC, date, timedelta
 from time import perf_counter
@@ -474,11 +475,28 @@ class ScanService:
     ) -> Run | None:
         """Claim and execute an already-persisted QUEUED run; publish under the same id.
 
-        Returns None when the run is not QUEUED anymore (already claimed, terminal,
-        or stopped cooperatively before the claim).
+        Returns None when the run is not claimable (already claimed, terminal,
+        incompatible with this server, or stopped cooperatively before the claim).
+        Pre-claim errors raise with the row still QUEUED; the executor backs off
+        and eventually fails the job. Post-claim errors persist FAILED, then raise.
         """
         run = self.repository.run_summary(identity)
         if run.state != RunState.QUEUED:
+            return None
+        if run.context.engine_version != __version__ or (
+            run.provider is not None and run.provider != self.repository.provider
+        ):
+            # The server changed under an accepted job; failing it outright beats
+            # silently executing with a different provider or engine.
+            self.repository.fail_queued(
+                run.id,
+                ErrorCode.EXECUTION_INCOMPATIBLE,
+                (
+                    f"accepted by engine {run.context.engine_version} / provider "
+                    f"{run.provider or 'unrecorded'}; server runs engine "
+                    f"{__version__} / provider {self.repository.provider}",
+                ),
+            )
             return None
         expected = self.calendar.sessions(
             run.context.as_of_session - timedelta(days=1100), run.context.as_of_session
@@ -496,14 +514,16 @@ class ScanService:
         )
         if not self.repository.claim(claimed):
             return None
-        # The daily baseline is fixed when the job actually starts, never at query time.
-        from qscan.application.reporting import ComparisonService
-
-        claimed = claimed.model_copy(
-            update={"comparison": ComparisonService(self.repository, self.snapshots).bind(claimed)}
-        )
         started = perf_counter()
         try:
+            # The daily baseline is fixed when the job actually starts, never at query time.
+            from qscan.application.reporting import ComparisonService
+
+            claimed = claimed.model_copy(
+                update={
+                    "comparison": ComparisonService(self.repository, self.snapshots).bind(claimed)
+                }
+            )
             items = []
             for index, instrument in enumerate(claimed.watchlist.instruments):
                 if should_stop is not None and should_stop():
@@ -688,24 +708,35 @@ class ScanService:
             warnings.update(result.warnings)
             if result.provenance is not None:
                 warnings.update(result.provenance.warnings)
-        completed = run.model_copy(
-            update={
-                "input_hash": digest,
-                "state": state,
-                "finished_at": self.clock.now().astimezone(UTC),
-                "progress": None,
-                "timings": timings,
-                "counts": Counts(
-                    requested=len(output),
-                    evaluated=evaluated,
-                    excluded=excluded,
-                    data_error=data_error,
-                    candidate=len(ranks),
-                ),
-                "warnings": tuple(sorted(warnings)),
-                "results": tuple(output),
-            }
-        )
+        update: dict[str, object] = {
+            "input_hash": digest,
+            "state": state,
+            "finished_at": self.clock.now().astimezone(UTC),
+            "progress": None,
+            "timings": timings,
+            "counts": Counts(
+                requested=len(output),
+                evaluated=evaluated,
+                excluded=excluded,
+                data_error=data_error,
+                candidate=len(ranks),
+            ),
+            "warnings": tuple(sorted(warnings)),
+            "results": tuple(output),
+        }
+        if state is RunState.FAILED:
+            # The results endpoints refuse FAILED runs, so the failure reason must
+            # be readable from the status document itself, never a bare null error.
+            reasons = Counter(
+                result.analysis.reasons[0].code
+                for result in output
+                if result.category != "evaluated"
+            )
+            detail = ", ".join(f"{code}:{count}" for code, count in reasons.most_common())
+            warnings.add(f"scan produced no candidates ({detail})")
+            update["warnings"] = tuple(sorted(warnings))
+            update["error"] = ErrorCode.SCAN_FAILED
+        completed = run.model_copy(update=update)
         from qscan.application.reporting import ComparisonService
 
         completed = completed.model_copy(

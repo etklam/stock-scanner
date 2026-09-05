@@ -237,6 +237,15 @@ def test_kill_running_server_recovers_on_restart(tmp_path):
         assert first_after["document"]["error"] == "WORKER_INTERRUPTED"
         assert first_after["document"]["started_at"] == first_before_kill["document"]["started_at"]
         assert first_after["document"]["input_hash"] is None
+        # A terminal run looks terminal: no live progress, counts closed out.
+        assert first_after["document"]["progress"] is None
+        assert first_after["document"]["counts"] == {
+            "requested": 1,
+            "evaluated": 0,
+            "excluded": 0,
+            "data_error": 1,
+            "candidate": 0,
+        }
         # The QUEUED job resumes and completes under the same id.
         restarted = wait_for_state(port2, token, second, {"SUCCEEDED"})
         assert restarted["counts"]["candidate"] == 1

@@ -1,6 +1,5 @@
 """Owner-scoped repositories; every operation owns a short-lived connection."""
 
-import json
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date
@@ -39,6 +38,7 @@ from qscan.application.contracts import (
     ApplicationError,
     CacheEntry,
     Clock,
+    Counts,
     Instrument,
     Progress,
     Provenance,
@@ -474,7 +474,12 @@ class SQLiteRepository:
             return (UUID(row.id), row.request_hash or "") if row else None
 
     def recover_interrupted(self) -> int:
-        """Mark leftover RUNNING rows FAILED/WORKER_INTERRUPTED; done runs are untouched."""
+        """Mark leftover RUNNING rows FAILED/WORKER_INTERRUPTED; done runs are untouched.
+
+        Recovered rows stay valid Run documents: live progress is cleared and
+        counts are closed out like any other failure. An unreadable document
+        aborts startup instead of persisting a document that no reader can parse.
+        """
         recovered = 0
         with self._write() as connection:
             rows = connection.execute(
@@ -483,19 +488,22 @@ class SQLiteRepository:
             for row in rows:
                 try:
                     run = Run.model_validate(row["document"])
-                except ValueError:
-                    run = None
-                document = (
-                    run.model_copy(
-                        update={
-                            "state": RunState.FAILED,
-                            "finished_at": self.clock.now().astimezone(UTC),
-                            "error": ErrorCode.WORKER_INTERRUPTED,
-                        }
-                    ).model_dump(mode="json", exclude={"results"})
-                    if run
-                    else json.dumps({"state": "FAILED", "error": "WORKER_INTERRUPTED"})
-                )
+                except ValueError as exc:
+                    raise ApplicationError(
+                        ErrorCode.INTERNAL_ERROR,
+                        f"Unreadable run document {row['id']}; restore it from backup",
+                    ) from exc
+                document = run.model_copy(
+                    update={
+                        "state": RunState.FAILED,
+                        "finished_at": self.clock.now().astimezone(UTC),
+                        "error": ErrorCode.WORKER_INTERRUPTED,
+                        "progress": None,
+                        "counts": Counts(
+                            requested=run.counts.requested, data_error=run.counts.requested
+                        ),
+                    }
+                ).model_dump(mode="json", exclude={"results"})
                 changed = connection.execute(
                     update(runs)
                     .where(runs.c.id == row["id"], runs.c.state == RunState.RUNNING.value)
@@ -503,6 +511,41 @@ class SQLiteRepository:
                 )
                 recovered += changed.rowcount
         return recovered
+
+    def fail_queued(self, identity: UUID, error: ErrorCode, warnings: tuple[str, ...] = ()) -> bool:
+        """QUEUED -> FAILED without executing (compatibility gate or poison job).
+
+        Unfiltered by owner like the other queue operations; the CAS keeps it a
+        no-op unless the row is still QUEUED.
+        """
+        with self._write() as connection:
+            document = connection.execute(
+                select(runs.c.document).where(
+                    runs.c.id == str(identity), runs.c.state == RunState.QUEUED.value
+                )
+            ).scalar_one_or_none()
+            if document is None:
+                return False
+            run = Run.model_validate(document)
+            connection.execute(
+                update(runs)
+                .where(runs.c.id == str(identity), runs.c.state == RunState.QUEUED.value)
+                .values(
+                    state=RunState.FAILED.value,
+                    document=run.model_copy(
+                        update={
+                            "state": RunState.FAILED,
+                            "finished_at": self.clock.now().astimezone(UTC),
+                            "error": error,
+                            "progress": None,
+                            # Nothing was fetched: requested is kept, coverage stays zero.
+                            "counts": Counts(requested=run.counts.requested),
+                            "warnings": warnings,
+                        }
+                    ).model_dump(mode="json", exclude={"results"}),
+                )
+            )
+            return True
 
     def runs_page(
         self, *, after: tuple[str, str] | None, limit: int, state: str | None

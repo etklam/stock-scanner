@@ -246,6 +246,8 @@ class Run(Contract):
     counts: Counts
     progress: Progress | None = None
     data_mode: DataMode = DataMode.AUTO
+    # Provider this run was accepted under; execution refuses a mismatched server.
+    provider: str | None = None
     timings: dict[str, float] = {}
     error: ErrorCode | None = None
     warnings: tuple[str, ...] = ()
@@ -271,6 +273,8 @@ class Provider(Protocol):
 
 
 class Repository(Protocol):
+    provider: str
+
     def save_watchlist(self, value: Watchlist, expected_revision: int | None) -> None: ...
     def delete_watchlist(self, identity: UUID) -> None: ...
     def watchlist(self, identity: UUID) -> Watchlist: ...
@@ -288,6 +292,9 @@ class Repository(Protocol):
     def run_owner(self, identity: UUID) -> str | None: ...
     def run_by_idempotency(self, key: str) -> tuple[UUID, str] | None: ...
     def recover_interrupted(self) -> int: ...
+    def fail_queued(
+        self, identity: UUID, error: ErrorCode, warnings: tuple[str, ...] = ()
+    ) -> bool: ...
     def runs_page(
         self, *, after: tuple[str, str] | None, limit: int, state: str | None
     ) -> tuple[tuple[Run, ...], bool]: ...

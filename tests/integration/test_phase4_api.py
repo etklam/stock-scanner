@@ -365,10 +365,8 @@ def test_results_cursor_pagination_ties_nulls_and_filters(harness):
         f"/api/v1/scans/{scan_id}/results", headers=harness.headers, params={"cursor": "garbage"}
     )
     assert malformed.status_code == 400
-    tampered = harness.client.get(
-        f"/api/v1/scans/{scan_id}/results", headers=harness.headers, params={"cursor": cursor}
-    )
-    assert tampered.status_code in (200, 400)
+    # A cursor minted for one run must never paginate another run
+    # (cross-run rejection is pinned in test_phase41.py).
 
 
 def test_scans_cursor_pagination_order_and_filters(harness):
@@ -606,7 +604,7 @@ def test_body_limit_enforced(tmp_path):
                 headers={**harness.headers, "content-length": str(MAX_BODY_BYTES + 1)},
                 json={"name": "big", "symbols": symbols},
             )
-            assert response.status_code in (413, 422)
+            assert response.status_code == 413
             oversized = client.post(
                 "/api/v1/watchlists",
                 headers=harness.headers,

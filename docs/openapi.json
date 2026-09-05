@@ -1,6 +1,150 @@
 {
   "components": {
     "schemas": {
+      "Change": {
+        "additionalProperties": false,
+        "properties": {
+          "codes": {
+            "items": {
+              "enum": [
+                "NEW_CANDIDATE",
+                "DROPPED_CANDIDATE",
+                "STAGE_CHANGED",
+                "SCORE_CHANGED",
+                "WINDOW_CHANGED",
+                "UNIVERSE_CHANGED",
+                "COMPARISON_UNAVAILABLE",
+                "DATA_REVISION_DIFF",
+                "NO_BASELINE"
+              ],
+              "type": "string"
+            },
+            "title": "Codes",
+            "type": "array"
+          },
+          "current": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SymbolAnalysis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "instrument_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instrument Id"
+          },
+          "previous": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SymbolAnalysis"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "symbol": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Symbol"
+          }
+        },
+        "required": [
+          "codes"
+        ],
+        "title": "Change",
+        "type": "object"
+      },
+      "Comparison": {
+        "additionalProperties": false,
+        "properties": {
+          "binding": {
+            "default": "recorded",
+            "enum": [
+              "recorded",
+              "legacy_unavailable",
+              "replay_unavailable"
+            ],
+            "title": "Binding",
+            "type": "string"
+          },
+          "changes": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "title": "Changes",
+            "type": "array"
+          },
+          "current_session": {
+            "format": "date",
+            "title": "Current Session",
+            "type": "string"
+          },
+          "previous_run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Previous Run Id"
+          },
+          "previous_session": {
+            "format": "date",
+            "title": "Previous Session",
+            "type": "string"
+          },
+          "reasons": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          },
+          "semantic_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Semantic Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "previous_session",
+          "current_session"
+        ],
+        "title": "Comparison",
+        "type": "object"
+      },
       "CountsOut": {
         "additionalProperties": false,
         "properties": {
@@ -110,17 +254,81 @@
         "title": "DataMode",
         "type": "string"
       },
-      "HTTPValidationError": {
+      "ErrorBody": {
+        "additionalProperties": false,
         "properties": {
-          "detail": {
-            "items": {
-              "$ref": "#/components/schemas/ValidationError"
+          "code": {
+            "$ref": "#/components/schemas/ErrorCode"
+          },
+          "details": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/JsonValue"
             },
-            "title": "Detail",
-            "type": "array"
+            "title": "Details",
+            "type": "object"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "request_id": {
+            "format": "uuid",
+            "title": "Request Id",
+            "type": "string"
           }
         },
-        "title": "HTTPValidationError",
+        "required": [
+          "code",
+          "message",
+          "request_id"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "ErrorCode": {
+        "enum": [
+          "WORKER_INTERRUPTED",
+          "NO_DATA",
+          "STALE_DATA",
+          "MISSING_REQUIRED_SESSION",
+          "INVALID_CLOSE",
+          "CONFLICTING_DUPLICATE",
+          "INSUFFICIENT_HISTORY",
+          "UNSUPPORTED_INSTRUMENT",
+          "SUSPICIOUS_FLAT_SERIES",
+          "ADJUSTMENT_REVIEW_REQUIRED",
+          "INVALID_AS_OF_SESSION",
+          "SESSION_NOT_COMPLETE",
+          "WATCHLIST_VERSION_CONFLICT",
+          "WATCHLIST_IN_USE",
+          "SCAN_NOT_READY",
+          "SCAN_FAILED",
+          "EXECUTION_INCOMPATIBLE",
+          "IDEMPOTENCY_CONFLICT",
+          "QUEUE_LIMIT_REACHED",
+          "VALIDATION_ERROR",
+          "UNAUTHORIZED",
+          "FORBIDDEN",
+          "NOT_FOUND",
+          "METHOD_NOT_ALLOWED",
+          "PAYLOAD_TOO_LARGE",
+          "INTERNAL_ERROR",
+          "REPORT_ERROR"
+        ],
+        "title": "ErrorCode",
+        "type": "string"
+      },
+      "ErrorEnvelope": {
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ErrorEnvelope",
         "type": "object"
       },
       "InstrumentOut": {
@@ -158,6 +366,7 @@
         "title": "InstrumentOut",
         "type": "object"
       },
+      "JsonValue": {},
       "PatchWatchlist": {
         "additionalProperties": false,
         "properties": {
@@ -402,6 +611,48 @@
           "description"
         ],
         "title": "RulesetOut",
+        "type": "object"
+      },
+      "ScanAccepted": {
+        "additionalProperties": false,
+        "properties": {
+          "as_of_session": {
+            "format": "date",
+            "title": "As Of Session",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "links": {
+            "$ref": "#/components/schemas/ScanLinks"
+          },
+          "ruleset_version": {
+            "title": "Ruleset Version",
+            "type": "string"
+          },
+          "state": {
+            "const": "QUEUED",
+            "default": "QUEUED",
+            "title": "State",
+            "type": "string"
+          },
+          "watchlist_revision": {
+            "minimum": 1.0,
+            "title": "Watchlist Revision",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "as_of_session",
+          "watchlist_revision",
+          "ruleset_version",
+          "links"
+        ],
+        "title": "ScanAccepted",
         "type": "object"
       },
       "ScanContext": {
@@ -870,46 +1121,6 @@
         "title": "SymbolAnalysis",
         "type": "object"
       },
-      "ValidationError": {
-        "properties": {
-          "ctx": {
-            "title": "Context",
-            "type": "object"
-          },
-          "input": {
-            "title": "Input"
-          },
-          "loc": {
-            "items": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "integer"
-                }
-              ]
-            },
-            "title": "Location",
-            "type": "array"
-          },
-          "msg": {
-            "title": "Message",
-            "type": "string"
-          },
-          "type": {
-            "title": "Error Type",
-            "type": "string"
-          }
-        },
-        "required": [
-          "loc",
-          "msg",
-          "type"
-        ],
-        "title": "ValidationError",
-        "type": "object"
-      },
       "WatchlistLinks": {
         "additionalProperties": false,
         "properties": {
@@ -1142,7 +1353,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1177,19 +1388,31 @@
           "required": true
         },
         "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ScanStatusOut"
+                }
+              }
+            },
+            "description": "Idempotency-key replay: current status of the original scan"
+          },
           "202": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/ScanAccepted"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "Scan accepted for asynchronous execution"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1229,7 +1452,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1258,16 +1481,18 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/Comparison"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "Persisted comparison against the bound baseline run"
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1316,17 +1541,38 @@
         "responses": {
           "200": {
             "content": {
-              "application/json": {
-                "schema": {}
+              "text/csv": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
               }
             },
-            "description": "Successful Response"
+            "description": "CSV report download",
+            "headers": {
+              "Content-Disposition": {
+                "description": "Attachment filename for the scan report",
+                "schema": {
+                  "type": "string"
+                }
+              },
+              "X-Result-Count": {
+                "schema": {
+                  "type": "integer"
+                }
+              },
+              "X-Scan-State": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
           },
           "422": {
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1427,7 +1673,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1477,7 +1723,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1539,7 +1785,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1597,7 +1843,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1630,7 +1876,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1668,7 +1914,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1716,7 +1962,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
@@ -1766,7 +2012,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/ErrorEnvelope"
                 }
               }
             },
