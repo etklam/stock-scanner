@@ -196,13 +196,13 @@ null/None、PARTIAL、SUCCEEDED 零候選、chart error：文字換行、状态�
 
 ### 本輪 remote CI
 
-新分支推送與三平台完整 offline/build/wheel 驗收進行中；完成結果會另行補錄。
+本輪首次 CI 和修正後通過的 CI 分別記於下方，保留失敗歷史。
 
 ### 尚未涵蓋
 
 真實盤中來源觀察、公開產品行情授權／SLA、kill-process recovery、backup/restore 演練、
 完整 API/auth/idempotency/queue、跨平台原生 GUI 視覺驗收。Phase 4 的前置共用服務已穩定，
-仍需本輪三平台 CI 通過才將此 milestone 標作跨平台完成；不代表 API 已存在。
+下方三平台 CI 已通過，可以開始 Phase 4 API 開發；不代表 API 已存在。
 
 ### 本輪首個 CI 發現的第二處 Windows encoding 問題
 
@@ -216,3 +216,19 @@ report 已產生 UTF-8 檔案，但 `emit` 向舊 codepage pipe 輸出含中文�
 修正 CLI JSON 為標準 ASCII Unicode escapes（仍是合法 UTF-8 JSON，decode 後字串完全相同）；
 報告檔案保持 UTF-8／CSV BOM，沒有設定全域 UTF-8 mode。測試刻意用非 UTF-8 codepage
 證明適用，未 skip Windows。wheel smoke 現在亦在失敗時列出被捕捉的 stdout/stderr。
+
+
+### Phase 3.5 最終程式驗收
+
+[Run 33967493810](https://github.com/etklam/stock-scanner/actions/runs/33967493810)，
+head `e46068fc672408b07aa3a7dd4e64b8318038b5ea`，completed/success。
+已逐步查核 Windows／macOS／Ubuntu 三個 jobs：uv sync --locked、Ruff check/format、
+strict mypy、完整 offline pytest、uv build、installed-wheel CLI smoke 全部 success，沒有 skip。
+
+最終本機 **187 passed / 8144 第三方 warnings**；strict mypy 33 files、Ruff、wheel/sdist
+build 與 repo 外 Unicode 路徑 installed-wheel smoke 再次通過。新增 cp1252 regression
+使本輪總數由 186 增至 187；沒有更改 uv.lock、依賴版本或全域 UTF-8 mode。
+
+程式、離線測試、實際來源、跨平台四項證據已分別完成：EOD 個人試用可用，Phase 4 的
+前置条件滿足。尚未完成的盤中／production／授權及 Phase 4 功能仍依上方範圍列示。
+本紀錄的後續提交只同步文件，已驗收程式版本為上述 SHA。

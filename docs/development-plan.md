@@ -844,7 +844,7 @@ concurrency 及 fixture overlap/full refresh 測試已完成；上列 Yahoo 綜�
 - [x] 結構化 symbol／窗口原因、空 CSV companion summary。
 - [x] 集中 Yahoo EOD_TRIAL gate、可靠 metadata、小名單真實 CLI 全流程。
 - [x] 桌面／窄螢幕 HTML 實際視覺驗收，沒有新增前端框架。
-- [ ] 新三平台 offline tests/build/installed-wheel CI：狀態見驗收紀錄。
+- [x] 新三平台 offline tests/build/installed-wheel CI：run 33967493810 全部通過，見驗收紀錄。
 
 實際證據、限制及本輪 CI 見 [驗收紀錄](phase-0-status.md)；gate 收窄理由見
 [ADR 0004](adr/0004-eod-trial-acceptance.md)。盤中觀察、公開行情授權、production SLA
