@@ -26,6 +26,9 @@ from qscan.application.contracts import RawPrices
 from qscan.bootstrap import bootstrap
 
 SRC_ROOT = str(Path(__file__).parents[2] / "src")
+# Every spawned interpreter gets the offline guard via sitecustomize:
+OFFLINE_GUARD = str(Path(__file__).parents[2] / "tests" / "_offline_guard")
+SRC_ROOT_AND_GUARD = OFFLINE_GUARD + os.pathsep + SRC_ROOT
 WRAPPER_PATH = Path(__file__).parents[2] / "scripts" / "daily_scan.py"
 CLOCKS = [datetime(2026, 3, 5, 12, tzinfo=UTC), datetime(2025, 11, 20, 12, tzinfo=UTC)]
 CLOSES = [50 + i * 0.5 for i in range(88)] + [99.0, 100.0] * 20 + [100.0, 101.0]
@@ -86,7 +89,7 @@ def _wrapper(arguments: list[str], timeout: int = 240) -> subprocess.CompletedPr
         capture_output=True,
         text=True,
         timeout=timeout,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
 
 
@@ -211,7 +214,7 @@ def _start_serve(script_path: Path, directory: Path, workdir: Path) -> tuple[sub
             cwd=workdir,
             stdout=output_handles[0],
             stderr=output_handles[1],
-            env={**os.environ, "PYTHONPATH": SRC_ROOT},
+            env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0),
         )
     finally:
@@ -488,7 +491,7 @@ def test_cli_path_two_clocks_dedup_and_partial(tmp_path):
                 capture_output=True,
                 text=True,
                 timeout=120,
-                env={**os.environ, "PYTHONPATH": SRC_ROOT},
+                env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
             ).stdout
         )
         assert len(runs) == 1  # no duplicate despite the second trigger
@@ -539,7 +542,7 @@ def test_revision_change_creates_new_intent(tmp_path):
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
     second = _wrapper(common)
     assert second.returncode == 3, (second.stdout, second.stderr)  # FLAT -> PARTIAL, new run
@@ -575,14 +578,14 @@ def test_concurrent_schedulers_single_run(tmp_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
     second = subprocess.Popen(
         [sys.executable, str(WRAPPER_PATH), *common],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
     first_out = first.communicate(timeout=240)
     second_out = second.communicate(timeout=240)
@@ -608,7 +611,7 @@ def test_concurrent_schedulers_single_run(tmp_path):
             capture_output=True,
             text=True,
             timeout=120,
-            env={**os.environ, "PYTHONPATH": SRC_ROOT},
+            env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
         ).stdout
     )
     assert len(runs) == 1  # serialized by the state lock; never duplicated

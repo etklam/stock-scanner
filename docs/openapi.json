@@ -305,6 +305,7 @@
           "SCAN_FAILED",
           "EXECUTION_INCOMPATIBLE",
           "IDEMPOTENCY_CONFLICT",
+          "REVIEW_REVISION_CONFLICT",
           "QUEUE_LIMIT_REACHED",
           "VALIDATION_ERROR",
           "UNAUTHORIZED",
@@ -422,6 +423,43 @@
           "updated_at"
         ],
         "title": "ProgressOut",
+        "type": "object"
+      },
+      "PutReview": {
+        "additionalProperties": false,
+        "properties": {
+          "expected_revision": {
+            "anyOf": [
+              {
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expected Revision"
+          },
+          "label": {
+            "enum": [
+              "worth_reviewing",
+              "borderline",
+              "not_useful"
+            ],
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "default": "",
+            "maxLength": 500,
+            "title": "Note",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label"
+        ],
+        "title": "PutReview",
         "type": "object"
       },
       "Reason": {
@@ -576,6 +614,23 @@
         "title": "ResultsPage",
         "type": "object"
       },
+      "ReviewsPage": {
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/SavedReviewOut"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ReviewsPage",
+        "type": "object"
+      },
       "RulesetOut": {
         "additionalProperties": false,
         "properties": {
@@ -611,6 +666,48 @@
           "description"
         ],
         "title": "RulesetOut",
+        "type": "object"
+      },
+      "SavedReviewOut": {
+        "additionalProperties": false,
+        "properties": {
+          "instrument_id": {
+            "format": "uuid",
+            "title": "Instrument Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "note": {
+            "title": "Note",
+            "type": "string"
+          },
+          "revision": {
+            "title": "Revision",
+            "type": "integer"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "instrument_id",
+          "label",
+          "note",
+          "revision",
+          "updated_at"
+        ],
+        "title": "SavedReviewOut",
         "type": "object"
       },
       "ScanAccepted": {
@@ -1753,6 +1850,106 @@
           }
         },
         "summary": "Result Detail"
+      }
+    },
+    "/api/v1/scans/{identity}/reviews": {
+      "get": {
+        "operationId": "list_reviews_api_v1_scans__identity__reviews_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identity",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Identity",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReviewsPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reviews"
+      }
+    },
+    "/api/v1/scans/{identity}/reviews/{instrument_id}": {
+      "put": {
+        "operationId": "put_review_api_v1_scans__identity__reviews__instrument_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "identity",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Identity",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "instrument_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Instrument Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PutReview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SavedReviewOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorEnvelope"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Put Review"
       }
     },
     "/api/v1/scans/{identity}/series/{instrument_id}": {

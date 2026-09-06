@@ -1,13 +1,14 @@
 # Close-only Setup Scanner
 
-**現況（0.1.0rc1，2026-09-06）：** 可安裝、可日常使用的本地 V1 發布候選——
-**CLI + loopback HTTP API**，個人美股 EOD 試用。功能：匯入名單、同步（CLI）或
-佇列（API）掃描、歷史查詢、固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、
-immutable snapshot replay、一致備份／驗證／還原、排程範例與人工覆核樣本匯出。
+**現況（0.1.0rc1＋Phase 6A，2026-09-06）：** 可安裝、可日常使用的本地 V1 發布候選——
+**CLI + loopback HTTP API + 本地覆核 UI**，個人美股 EOD 試用。功能：匯入名單、
+同步（CLI）或佇列（API）掃描、瀏覽器完成「選名單→掃描→查看候選與 Close 圖→
+保存覆核標記」、歷史查詢、固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、
+immutable snapshot replay、一致備份／驗證／還原、排程範例與人工覆核匯出。
 Yahoo 在鎖定依賴下為 **EOD_TRIAL**：只掃已完成交易日、metadata 已驗證的美股／ETF；
 盤中與 production 行情未放行（[驗收決定](docs/adr/0004-eod-trial-acceptance.md)）。
-明確不提供：下單、績效回測、多使用者／公開部署、自動交易。
-API 合約見 [api.md](docs/api.md)；備份／排程見 [operations](docs/operations.md)；
+明確不提供：下單、績效回測、多使用者／公開部署、自動交易、手機遠端連線。
+API 合約見 [api.md](docs/api.md)；備份／排程／UI 運維見 [operations](docs/operations.md)；
 本輪證據總表見 [release checklist](docs/release-checklist.md)。
 
 ## 安裝
@@ -205,11 +206,43 @@ session＋revision＋provider＋attempt）計算，名單修改（revision 變�
 launchd／schtasks／cron／systemd timer 完整範例（絕對路徑、無 venv 依賴）見
 [operations](docs/operations.md)；範例不會被本工具自動安裝。
 
-**人工覆核樣本**（工具；標籤留空待人類填寫，不宣稱已驗證的 precision/recall）：
+**人工覆核樣本**（工具；標籤可由 UI 保存或留待人類填寫，不宣稱已驗證的 precision/recall）：
 
 ```sh
 uv run qscan --data-dir "$HOME/qscan-personal" scans review-export "$SCAN_ID" --output ./review.csv --non-candidates 10 --seed 7
 ```
+
+已保存嘅 UI 覆核標記會自動併入 CSV 並注明匯出時間（標記屬可變資料，唔係
+immutable scan snapshot）。
+
+## E. 本地覆核 UI（Phase 6A）
+
+`qscan serve` 之後，瀏覽器打開 **`http://127.0.0.1:8000/ui/`**：
+
+```sh
+export QSCAN_DATA_DIR="$HOME/qscan-personal"
+uv run qscan init      # 建立資料目錄與本機 API token（api-token.json，0600）
+uv run qscan serve     # 之後開瀏覽器 /ui/
+```
+
+- 第一次進入 UI 要貼上 `api-token.json` 內嘅 token；**token 只存在瀏覽器
+  記憶體**，唔會寫入任何 storage 或 URL；401／輪換後要求重新連線。
+- 三個畫面：**名單與掃描**（建立／改名／貼上 symbols、揀 data mode、提交後
+  即時顯示 scan ID 與實際進度；double-click／reload 唔會重建重複任務）、
+  **歷史**（cursor 分頁、候選／全部有效評估對照、零候選／PARTIAL／FAILED／
+  server 不可達各自獨立呈現）、**候選詳情**（Close＋SMA10/20/50 圖、所選
+  窗口與收市阻力、固定中文原因說明、值得睇／一般／唔值得睇＋備註覆核標記）。
+- 頂部常駐限制說明：close-only 初篩，日內形態、成交量與流動性未評估；
+  分數係覆核優次，唔係勝率。fixture 資料標明 SYNTHETIC／DEMO，Yahoo 屬
+  EOD_TRIAL，唔會冒充交易所認證資料。
+- **wheel 已內置編譯 UI**：`uv tool install` 安裝後完全唔需要 Node。由
+  source checkout 行 serve 而無 build assets 時，`/ui/` 會列出確實 build
+  命令（`cd web && npm ci && npm run build`）。
+- 開發模式（改 UI 先需要）：`cd web && npm ci && npm run dev`，另開
+  `qscan serve --dev-origin http://localhost:5173`；proxy 唔剝 Origin。
+- 覆核標記按 run＋標的保存（同 principal），有 revision 衝突保護；更新標記
+  唔會改寫分數或排名，亦唔會自動帶去第二日；備份／還原包含標記。
+  呢個係單人本地介面：只綁 loopback，唔聲稱手機或遠端可用。
 
 ## 驗證與開發入口
 

@@ -1,4 +1,13 @@
-"""Install the built wheel with locked dependencies and run outside the repository."""
+"""Install the built wheel with locked dependencies and run outside the repository.
+
+Every interpreter spawned here (the installed CLI, serve, the fresh venv's
+python) receives the offline guard via PYTHONPATH (tests/_offline_guard/
+sitecustomize.py), so the same socket/native-transport rules apply as in the
+test suite. The venv's actual runtime identity (python executable + SQLite
+version) is verified against the release advisory: a fresh venv may resolve a
+different interpreter than the host shell, and release acceptance must check
+the one that will really run.
+"""
 
 import base64
 import csv
@@ -7,13 +16,20 @@ import os
 import re
 import socket
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
 from pathlib import Path
 
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+
+from qscan.adapters.diagnostics import sqlite_wal_reset_status  # noqa: E402
+
 TERMINAL_STATES = {"SUCCEEDED", "PARTIAL", "FAILED"}
+_GUARD_ENV = {**os.environ, "PYTHONPATH": str(ROOT / "tests" / "_offline_guard")}
 
 
 def free_port() -> int:
@@ -68,6 +84,7 @@ def start_server(executable: Path, data_dir: Path, workdir: Path) -> tuple[subpr
         cwd=workdir,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        env=_GUARD_ENV,
     )
     base = f"http://127.0.0.1:{port}"
     wait_ready(base)
@@ -139,6 +156,15 @@ def http_flow(executable: Path, data_dir: Path, workdir: Path) -> str:
             assert response.headers["X-Scan-State"] == "SUCCEEDED"
             csv_body = response.read().decode("utf-8-sig")
         assert len(csv_body.strip().splitlines()) == 2  # header + one candidate
+        # The compiled UI ships with the wheel: the shell loads anonymously
+        # (no token in headers), while every business API stays protected and
+        # an unknown /api path is a JSON 404 envelope, never SPA HTML.
+        with urllib.request.urlopen(f"{base}/ui/", timeout=15) as response:
+            shell = response.read().decode("utf-8")
+            assert response.status == 200 and 'id="root"' in shell
+        assert "qscan" in shell
+        status, body, _ = http_json("GET", f"{base}/api/v1/not-a-route", token)
+        assert status == 404 and body["error"]["code"] == "NOT_FOUND"
         return scan_id
     finally:
         process.terminate()
@@ -153,7 +179,11 @@ def main() -> None:
     with tempfile.TemporaryDirectory(prefix="qscan wheel 測試 ") as temporary:
         directory = Path(temporary)
         environment = directory / "wheel env"
-        subprocess.run(["uv", "venv", "--python", "3.12", str(environment)], check=True)
+        # Pin the smoke venv to THIS gate's interpreter: `uv venv --python 3.12`
+        # would resolve uv's own managed CPython, whose bundled SQLite may be a
+        # different (possibly advisory-affected) build than the host's. The
+        # identity check below then verifies what actually runs the wheel.
+        subprocess.run(["uv", "venv", "--python", sys.executable, str(environment)], check=True)
         binary = environment / ("Scripts" if os.name == "nt" else "bin")
         python = binary / ("python.exe" if os.name == "nt" else "python")
         requirements = directory / "dependencies.txt"
@@ -175,6 +205,28 @@ def main() -> None:
             ["uv", "pip", "install", "--python", str(python), "-r", str(requirements), str(wheel)],
             check=True,
         )
+        # Verify the runtime identity of the interpreter that will REALLY run
+        # the wheel: a uv-managed venv may resolve a different python/SQLite
+        # than the host shell. An affected SQLite fails the release smoke.
+        runtime = subprocess.run(
+            [
+                str(python),
+                "-c",
+                "import sqlite3, sys; print(sys.executable); print(sqlite3.sqlite_version)",
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+            env=_GUARD_ENV,
+        ).stdout.splitlines()
+        status = sqlite_wal_reset_status(runtime[1])
+        print(f"wheel-smoke runtime: python at {runtime[0]}", flush=True)
+        print(f"wheel-smoke runtime: sqlite {runtime[1]} - {status}", flush=True)
+        if status.startswith("AFFECTED"):
+            raise AssertionError(
+                "The installed-wheel environment runs an SQLite runtime affected by "
+                "the WAL-reset bug; release acceptance refuses this runtime."
+            )
         executable = binary / ("qscan.exe" if os.name == "nt" else "qscan")
         data_dir = directory / "資料 data"
 
@@ -193,6 +245,7 @@ def main() -> None:
                 capture_output=True,
                 text=True,
                 encoding="utf-8",
+                env=_GUARD_ENV,
             )
             assert result.returncode == expect, (
                 args,

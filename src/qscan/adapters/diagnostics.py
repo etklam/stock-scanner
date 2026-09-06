@@ -2,6 +2,7 @@
 
 import os
 import sqlite3
+import sys
 from datetime import date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -25,6 +26,9 @@ class Diagnosis(Contract):
     release_limitations: tuple[str, ...]
     online: str = "NOT_REQUESTED"
     sqlite_runtime: str = ""
+    # The actually-loaded interpreter, recorded so a release claim can name the
+    # runtime that was verified (not the shell's nominal python).
+    python_runtime: str = ""
 
 
 # Verified 2026-09-06 against sqlite.org/news.html and sqlite.org/wal.html
@@ -115,6 +119,7 @@ def diagnose(directory: Path, online: bool = False) -> Diagnosis:
     sqlite_version = sqlite3.sqlite_version
     sqlite_report = f"{sqlite_version} - {sqlite_wal_reset_status(sqlite_version)}"
     checks["sqlite_runtime"] = sqlite_report
+    python_report = f"{sys.version.split()[0]} ({sys.implementation.name}) at {sys.executable}"
     return Diagnosis(
         local_healthy=local_healthy,
         initialized=initialized,
@@ -124,4 +129,5 @@ def diagnose(directory: Path, online: bool = False) -> Diagnosis:
         release_blockers=yahoo_release().blockers,
         release_limitations=yahoo_release().limitations,
         sqlite_runtime=sqlite_report,
+        python_runtime=python_report,
     )

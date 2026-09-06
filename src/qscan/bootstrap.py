@@ -24,6 +24,7 @@ from qscan.application.contracts import (
     ServiceLock,
 )
 from qscan.application.reporting import ComparisonService, ReportService
+from qscan.application.review import ReviewService
 from qscan.application.services import (
     MarketDataService,
     ScanQueryService,
@@ -45,6 +46,7 @@ class Application:
     queries: ScanQueryService
     reports: ReportService
     comparisons: ComparisonService
+    reviews: ReviewService
     provider: Provider
     calendar: Calendar
     clock: Clock
@@ -75,6 +77,7 @@ class Application:
             queries=ScanQueryService(repository),
             reports=ReportService(repository, self.snapshots),
             comparisons=ComparisonService(repository, self.snapshots),
+            reviews=ReviewService(repository),
             provider=self.provider,
             calendar=self.calendar,
             clock=self.clock,
@@ -147,6 +150,7 @@ def bootstrap(
         ScanQueryService(repository),
         ReportService(repository, snapshots),
         ComparisonService(repository, snapshots),
+        ReviewService(repository),
         provider,
         calendar,
         clock,

@@ -177,3 +177,27 @@ class ScanAccepted(Contract):
     watchlist_revision: int = Field(ge=1)
     ruleset_version: str
     links: ScanLinks
+
+
+# --- human review labels (mutable data; never part of scan results) ---
+
+
+class PutReview(Contract):
+    label: Literal["worth_reviewing", "borderline", "not_useful"]
+    note: str = Field(default="", max_length=500)
+    # Required when a label already exists so concurrent editors cannot
+    # silently overwrite each other; omit it only for a first-time label.
+    expected_revision: int | None = Field(default=None, ge=1)
+
+
+class SavedReviewOut(Contract):
+    run_id: UUID
+    instrument_id: UUID
+    label: str
+    note: str
+    revision: int
+    updated_at: datetime
+
+
+class ReviewsPage(Contract):
+    items: tuple[SavedReviewOut, ...]

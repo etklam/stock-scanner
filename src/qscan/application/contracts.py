@@ -229,6 +229,25 @@ class Comparison(Contract):
     changes: tuple[Change, ...] = ()
 
 
+ReviewLabel = Literal["worth_reviewing", "borderline", "not_useful"]
+
+
+class SavedReview(Contract):
+    """One human review label scoped to (owner, run, instrument).
+
+    Mutable review data kept strictly separate from immutable scan results:
+    saving a label never touches scores, ranks, hashes or snapshots, never
+    carries across runs automatically, and an exact replay starts unlabeled.
+    """
+
+    run_id: UUID
+    instrument_id: UUID
+    label: ReviewLabel
+    note: str = Field(default="", max_length=500)
+    revision: int = Field(ge=1)
+    updated_at: datetime
+
+
 class Run(Contract):
     id: UUID
     state: RunState
@@ -313,6 +332,15 @@ class Repository(Protocol):
     def run(self, identity: UUID) -> Run: ...
     def runs(self) -> tuple[Run, ...]: ...
     def summaries(self, limit: int | None = 30) -> tuple[Run, ...]: ...
+    def reviews_for_run(self, identity: UUID) -> tuple[SavedReview, ...]: ...
+    def save_review(
+        self,
+        identity: UUID,
+        instrument_id: UUID,
+        label: str,
+        note: str,
+        expected_revision: int | None,
+    ) -> SavedReview: ...
 
 
 class Snapshots(Protocol):

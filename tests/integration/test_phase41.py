@@ -47,6 +47,9 @@ RISING = RawPrices(tuple(zip(SESSIONS, CLOSES, strict=True)))
 FLAT = RawPrices(tuple(zip(SESSIONS, (100.0,) * len(SESSIONS), strict=True)))
 TERMINAL = {RunState.SUCCEEDED, RunState.PARTIAL, RunState.FAILED}
 SRC_ROOT = str(Path(__file__).parents[2] / "src")
+# Every spawned interpreter gets the offline guard via sitecustomize:
+OFFLINE_GUARD = str(Path(__file__).parents[2] / "tests" / "_offline_guard")
+SRC_ROOT_AND_GUARD = OFFLINE_GUARD + os.pathsep + SRC_ROOT
 
 SERVE_SCRIPT = textwrap.dedent(
     """
@@ -198,7 +201,7 @@ def test_shutdown_timeout_exits_process_and_releases_ownership(tmp_path):
             cwd=workdir,
             stdout=output_handles[0],
             stderr=output_handles[1],
-            env={**os.environ, "PYTHONPATH": SRC_ROOT},
+            env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
             creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0),
         )
     finally:

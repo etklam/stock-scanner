@@ -14,12 +14,23 @@
   `qscan init` 建立並存於 `<data-dir>/api-token.json`（0600），`qscan token-rotate`
   明確輪換（principal 與 ownership scope 不變；serve 運行中輪換即時生效）。
   token 不放 query string／log／報告。
-- 帶 `Origin` 的請求一律依嚴格 allowlist 驗證（預設為空 → 一律 403，含 preflight
-  與 `Origin: null`）；不輸出任何 CORS response header。原生 client 無 Origin
+- 帶 `Origin` 的請求依嚴格 allowlist 驗證。allowlist 只由**受信任 server 配置**
+  形成：本 server 自己的 loopback listen origins（`http://127.0.0.1:<port>`／
+  `http://localhost:<port>`）加上運維明確傳入的 `serve --dev-origin`（例如
+  Vite dev server），**不反射 request 的 Host/Origin**。同 origin 瀏覽器
+  POST 因此通過（本地 UI 正常使用），外部或 `Origin: null` 一律 403；
+  不輸出任何 CORS response header，不使用 `*`。原生 client 無 Origin
   但必須帶 token。Host 限 `127.0.0.1[:port]`／`localhost[:port]`，其他 403。
-- `/health/live`、`/health/ready` 免認證，只回最少狀態；ready 以 DB 連線與
+- `/health/live`、`/health/ready` 免認證，只回最少狀態（live 附 `provider`
+  欄位，供排程 wrapper 核對 `--provider` 與 server 一致）；ready 以 DB 連線與
   executor thread 存活判定，不連 Yahoo。OpenAPI UI 預設關閉；
   `--dev-openapi` 才在 loopback 開啟 `/openapi.json` 與 `/docs`。
+- `/ui/` 掛載**編譯後靜態 UI**（wheel 內建 `qscan/interfaces/web/dist`；
+  source checkout 缺 build assets 時回 404 並附 `npm run build` 提示）。
+  純 HTML/JS/CSS shell 可匿名載入；**所有 `/api/*` 業務請求仍需 bearer
+  token**，且 `/api` 的 404 一律係 JSON error envelope，唔會被 SPA fallback
+  吃成 200 HTML。UI 無 history-API fallback：未知 `/ui/*` asset 由
+  StaticFiles 回 404。
 - Request body 上限 1 MB（同時檢查 Content-Length 與實際讀取位元組數，413）。
   未來 App 的公開部署另有身份／TLS／授權要求，見 development-plan 第 11.2 節。
 
@@ -41,6 +52,8 @@
 | GET | `/api/v1/scans/{id}/results/{instrument_id}` | 單一結果完整內容（features、分數構成、reasons、windows） |
 | GET | `/api/v1/scans/{id}/series/{instrument_id}` | 該 run snapshot 的 Close/SMA10/20/50；`limit` 預設 126、最大 504；均線先以足夠歷史計算再裁切顯示 |
 | GET | `/api/v1/scans/{id}/changes` | 已固定的 comparison（不重新選 baseline） |
+| GET | `/api/v1/scans/{id}/reviews` | 該 run 全部已保存人工標記（批量一個 query） |
+| PUT | `/api/v1/scans/{id}/reviews/{instrument_id}` | 保存／更新一個標記（`label`＋`note≤500`＋`expected_revision`）；409 `REVIEW_REVISION_CONFLICT` |
 | GET | `/api/v1/scans/{id}/export?format=csv` | 直接回 CSV 內容（UTF-8 BOM，與 CLI 同 renderer）；`all_results=true` 含全部分類；`X-Scan-State`、`X-Result-Count` headers 保留空結果語義，不放假 ticker |
 
 GET 一律唯讀：不下載行情、不建立任務、不寫報告檔案；歷史 series/export 只讀該
@@ -97,6 +110,29 @@ Content-Type: application/json
 （status endpoint 仍可讀 diagnostics）；只有 SUCCEEDED/PARTIAL 公開正常結果，
 不用空 array 假扮「全部失敗但零候選」。daily baseline 在 job 開始執行時固定，
 `changes` 回傳已發布的 comparison。
+
+## 人工覆核標記（reviews；Phase 6A）
+
+每個 run＋instrument 可保存一個最小人工覆核標記，scope 為
+**authenticated principal + run ID + instrument ID**：
+
+```json
+{"label": "worth_reviewing", "note": "整理收窄，值得開圖", "expected_revision": 2}
+```
+
+- `label` ∈ `worth_reviewing / borderline / not_useful`；`note` ≤500 字；
+  未標記 ≠ 唔值得睇。
+- **可變資料**，獨立 table（migration 0004 `scan_reviews`），與 immutable
+  scan results/snapshots 完全分離——保存／更新不改寫 score、rank、任何 hash；
+  標記不會自動套到第二日，exact replay 唔會繼承原 run 標記（新 run 由零開始）。
+- 只可標記**有有效 evaluation** 的標的（excluded／data-error 回 400）；
+  其他 principal 的 run 一律 404。
+- revision optimistic concurrency：首次保存可省略 `expected_revision`；
+  之後必須帶目前 revision，不符（包括盲寫）回 409
+  `REVIEW_REVISION_CONFLICT`，唔會靜默覆蓋。
+- `GET .../reviews` 一次批量回全部標記（列表 UI 每行一個 request）。
+- 備份／還原包含 reviews（單一 DB）；`scans review-export` CSV 會併入已保存
+  標記並注明匯出時間——標記屬可變資料，唔冒充原 scan snapshot。
 
 ## 慣例
 

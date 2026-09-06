@@ -161,7 +161,9 @@ def test_handcrafted_consistent_archive_verifies(tmp_path):
 def test_oversized_manifest_rejected_before_read(tmp_path, monkeypatch):
     monkeypatch.setattr(backup, "_MANIFEST_BYTES", 128)
     archive = _craft_archive(tmp_path / "ok.zip", snapshot_plain=_valid_snapshot_plain())
-    with pytest.raises(backup.ApplicationError, match="manifest exceeds"):
+    # Phase 6A: the manifest counts against the shared bounded-read path, so
+    # the rejection uses the unified entry-limit message (still before reading).
+    with pytest.raises(backup.ApplicationError, match="exceeds size limits: manifest.json"):
         verify_backup(archive)
 
 

@@ -324,6 +324,8 @@ def review_export(
     seed: Annotated[int, typer.Option()] = 7,
 ) -> None:
     """Export candidates plus a seeded non-candidate control sample for human review."""
+    from datetime import UTC, datetime
+
     from qscan.application.review import review_samples, write_review_csv
 
     with application(ctx, readonly=True) as instance:
@@ -332,8 +334,10 @@ def review_export(
             raise ApplicationError(
                 ErrorCode.SCAN_NOT_READY, "Review export needs a finished run with evaluations"
             )
-        samples = review_samples(run, non_candidates=non_candidates, seed=seed)
+        reviews = instance.reviews.list(scan_id)
+        samples = review_samples(run, non_candidates=non_candidates, seed=seed, reviews=reviews)
         path = write_review_csv(samples, output)
+        exported_at = datetime.now(UTC).isoformat()
         emit(
             {
                 "scan_id": str(scan_id),
@@ -344,6 +348,15 @@ def review_export(
                 "excluded_count": samples["excluded_count"],
                 "data_errors": samples["data_errors"],
                 "labels_pending": samples["labels"],
+                "labeled_count": samples["labeled_count"],
+                "exported_at": exported_at,
+                # Reviews are mutable user data: the sheet is an export at a
+                # point in time, NOT the immutable scan snapshot.
+                "note": (
+                    "Labels/notes are mutable review data exported at "
+                    f"{exported_at}; they are not part of the immutable scan "
+                    "snapshot and may have changed since."
+                ),
             }
         )
 
@@ -387,6 +400,14 @@ def serve(
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     queue_limit: Annotated[int, typer.Option(min=1, max=1000)] = 20,
     dev_openapi: Annotated[bool, typer.Option("--dev-openapi")] = False,
+    dev_origin: Annotated[
+        list[str] | None,
+        typer.Option(
+            "--dev-origin",
+            help="Explicit dev Origin allowlist entry (e.g. the Vite dev server); "
+            "never inferred from requests. Repeatable.",
+        ),
+    ] = None,
 ) -> None:
     """Run the loopback HTTP API with one serial durable scan executor."""
     from qscan.bootstrap import resolve_data_dir
@@ -407,6 +428,7 @@ def serve(
         port=port,
         queue_limit=queue_limit,
         dev_openapi=dev_openapi,
+        dev_origins=tuple(dev_origin or ()),
     )
     raise typer.Exit(code)
 

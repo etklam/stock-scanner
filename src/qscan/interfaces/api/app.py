@@ -18,6 +18,7 @@ import uvicorn
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
@@ -25,7 +26,13 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from qscan import __version__
 from qscan.adapters.report_renderer import render
-from qscan.application.contracts import ApplicationError, Comparison, Run, ScanResult
+from qscan.application.contracts import (
+    ApplicationError,
+    Comparison,
+    Run,
+    SavedReview,
+    ScanResult,
+)
 from qscan.bootstrap import Application
 from qscan.domain.models import ErrorCode, RunState, Stage
 from qscan.domain.rules import RuleConfig
@@ -40,10 +47,13 @@ from qscan.interfaces.api.schemas import (
     InstrumentOut,
     PatchWatchlist,
     ProgressOut,
+    PutReview,
     ReplaceSymbols,
     ResultOut,
     ResultsPage,
+    ReviewsPage,
     RulesetOut,
+    SavedReviewOut,
     ScanAccepted,
     ScanLinks,
     ScansPage,
@@ -69,6 +79,7 @@ _STATUS_OF: dict[ErrorCode, int] = {
     ErrorCode.SCAN_NOT_READY: 409,
     ErrorCode.SCAN_FAILED: 409,
     ErrorCode.IDEMPOTENCY_CONFLICT: 409,
+    ErrorCode.REVIEW_REVISION_CONFLICT: 409,
     ErrorCode.QUEUE_LIMIT_REACHED: 429,
     ErrorCode.UNAUTHORIZED: 401,
     ErrorCode.FORBIDDEN: 403,
@@ -108,12 +119,14 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         allowed_hosts: tuple[str, ...],
         allowed_origins: tuple[str, ...],
         exempt: frozenset[str],
+        exempt_prefixes: tuple[str, ...] = (),
     ) -> None:
         super().__init__(app)
         self.authenticator = authenticator
         self.allowed_hosts = allowed_hosts
         self.allowed_origins = allowed_origins
         self.exempt = exempt
+        self.exempt_prefixes = exempt_prefixes
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Any:
         request.state.request_id = uuid4()
@@ -125,14 +138,19 @@ class SecurityMiddleware(BaseHTTPMiddleware):
             )
         origin = request.headers.get("origin")
         # No CORS is offered: any Origin (including "null") outside the strict
-        # allowlist is rejected for every method, preflight or not.
+        # allowlist is rejected for every method, preflight or not. The
+        # allowlist is formed from the trusted server configuration (own
+        # loopback listen origins + explicit dev origins), never reflected
+        # from the request.
         if origin is not None and origin not in self.allowed_origins:
             return error_response(
                 403, ErrorCode.FORBIDDEN.value, "Origin is not allowed", request.state.request_id
             )
-        if request.url.path not in self.exempt and not self.authenticator.check(
-            request.headers.get("authorization")
-        ):
+        path = request.url.path
+        anonymous = path in self.exempt or any(
+            path == prefix or path.startswith(prefix + "/") for prefix in self.exempt_prefixes
+        )
+        if not anonymous and not self.authenticator.check(request.headers.get("authorization")):
             return error_response(
                 401,
                 ErrorCode.UNAUTHORIZED.value,
@@ -253,6 +271,7 @@ def create_app(
     allowed_origins: tuple[str, ...] = (),
     dev_openapi: bool = False,
     executor: ScanExecutor | None = None,
+    ui_assets: Path | None = None,
 ) -> FastAPI:
     """Build the FastAPI app without touching the database or network.
 
@@ -262,6 +281,10 @@ def create_app(
     authenticator = TokenAuthenticator(token_path)
     worker = executor
     exempt = frozenset({"/health/live", "/health/ready"})
+    # The compiled UI shell is static build output (no data, no secrets); it is
+    # the only anonymous path besides health. Every /api route still requires
+    # the bearer token, and /api 404s are never swallowed by an SPA fallback.
+    exempt_prefixes: tuple[str, ...] = ("/ui",)
     if dev_openapi:
         exempt |= frozenset({"/openapi.json", "/docs", "/docs/oauth2-redirect"})
 
@@ -298,11 +321,31 @@ def create_app(
         allowed_hosts=allowed_hosts,
         allowed_origins=allowed_origins,
         exempt=exempt,
+        exempt_prefixes=exempt_prefixes,
     )
     app.add_exception_handler(RequestValidationError, cast(Any, validation_handler))
     app.add_exception_handler(ApplicationError, cast(Any, application_handler))
     app.add_exception_handler(StarletteHTTPException, cast(Any, http_handler))
     app.add_exception_handler(Exception, cast(Any, unexpected_handler))
+
+    # --- compiled local UI (same origin; assets are the only mount) ---
+
+    # Compiled UI assets ship inside the package: interfaces/web/dist.
+    web_dist = ui_assets if ui_assets is not None else Path(__file__).parent.parent / "web" / "dist"
+    if web_dist.is_dir() and (web_dist / "index.html").is_file():
+        app.mount("/ui", StaticFiles(directory=web_dist, html=True), name="ui")
+    else:
+
+        @app.get("/ui/{rest:path}", include_in_schema=False)
+        def ui_not_built(rest: str) -> JSONResponse:
+            return error_response(
+                404,
+                ErrorCode.NOT_FOUND.value,
+                "The compiled UI is not present at this installation. Build it once "
+                "with `npm ci && npm run build` inside web/ (or install a wheel, "
+                "which ships the built assets); qscan serve needs no Node at runtime.",
+                uuid4(),
+            )
 
     def scoped() -> Application:
         return scanner.for_principal(authenticator.principal)
@@ -317,7 +360,9 @@ def create_app(
 
     @app.get("/health/live")
     def live() -> dict[str, str]:
-        return {"status": "alive"}
+        # Provider identity lets scheduler wrappers refuse a mismatched
+        # --provider flag instead of silently deduplicating against it.
+        return {"status": "alive", "provider": scanner.provider.name}
 
     @app.get("/health/ready")
     def ready() -> JSONResponse:
@@ -678,6 +723,40 @@ def create_app(
             as_of_session=run.context.as_of_session,
         )
 
+    def review_out(value: SavedReview) -> SavedReviewOut:
+        return SavedReviewOut(
+            run_id=value.run_id,
+            instrument_id=value.instrument_id,
+            label=value.label,
+            note=value.note,
+            revision=value.revision,
+            updated_at=value.updated_at,
+        )
+
+    @app.get("/api/v1/scans/{identity}/reviews")
+    def list_reviews(api: Principal, identity: UUID) -> ReviewsPage:
+        # One batched query for the whole table: no per-row requests.
+        return ReviewsPage(items=tuple(review_out(r) for r in api.reviews.list(identity)))
+
+    @app.put("/api/v1/scans/{identity}/reviews/{instrument_id}")
+    def put_review(
+        api: Principal,
+        identity: UUID,
+        instrument_id: UUID,
+        body: PutReview,
+    ) -> SavedReviewOut:
+        # Only instruments with a valid evaluation can be labeled; a conflicting
+        # expected revision raises 409 REVIEW_REVISION_CONFLICT (never a silent
+        # overwrite). Scores/ranks/hashes are untouched by definition.
+        review: SavedReview = api.reviews.save(
+            identity,
+            instrument_id,
+            body.label,
+            body.note,
+            body.expected_revision,
+        )
+        return review_out(review)
+
     @app.get(
         "/api/v1/scans/{identity}/changes",
         responses={
@@ -781,6 +860,7 @@ def run_serve(
     queue_limit: int = 20,
     stop_grace: float = 30.0,
     dev_openapi: bool = False,
+    dev_origins: tuple[str, ...] = (),
     log_level: str = "warning",
 ) -> int:
     """Entry point for `qscan serve`: ownership, recovery, executor, HTTP, shutdown."""
@@ -811,10 +891,16 @@ def run_serve(
         file=sys.stderr,
         flush=True,
     )
+    # The Origin allowlist is formed from the TRUSTED server configuration:
+    # the loopback origins this server itself listens on, plus explicit dev
+    # origins (e.g. the Vite dev server) given by the operator. The request's
+    # Host/Origin is never reflected into it.
+    origins = tuple(f"http://{listen_host}:{port}" for listen_host in ("127.0.0.1", "localhost"))
     app = create_app(
         scanner,
         token_path=token_path,
         queue_limit=queue_limit,
+        allowed_origins=(*origins, *dev_origins),
         dev_openapi=dev_openapi,
         executor=executor,
     )

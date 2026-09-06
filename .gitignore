@@ -4,10 +4,15 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-dist/
+/dist/
+web/node_modules/
 *.egg-info/
 .coverage
 htmlcov/
 .qscan/
 *.sqlite*
 provider-spike*.json
+web/e2e/.state.json
+web/test-results/
+web/playwright-report/
+web/e2e/.state.json

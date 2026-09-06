@@ -33,6 +33,9 @@ SESSIONS = NYSECalendar().sessions(date(2025, 1, 1), date(2026, 9, 4))[-130:]
 CLOSES = [50 + i * 0.5 for i in range(88)] + [99.0, 100.0] * 20 + [100.0, 101.0]
 CLOCK = FixedClock(datetime(2026, 9, 5, 12, tzinfo=UTC))
 SRC_ROOT = str(Path(__file__).parents[2] / "src")
+# Every spawned interpreter gets the offline guard via sitecustomize:
+OFFLINE_GUARD = str(Path(__file__).parents[2] / "tests" / "_offline_guard")
+SRC_ROOT_AND_GUARD = OFFLINE_GUARD + os.pathsep + SRC_ROOT
 
 
 def make_seed(directory: Path):
@@ -386,7 +389,7 @@ def test_backup_cli_commands_end_to_end(tmp_path):
             capture_output=True,
             text=True,
             timeout=120,
-            env={**os.environ, "PYTHONPATH": SRC_ROOT},
+            env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
         )
         assert result.returncode == 0, (result.returncode, result.stdout, result.stderr)
         return json.loads(result.stdout)

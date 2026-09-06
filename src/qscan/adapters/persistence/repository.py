@@ -2,7 +2,7 @@
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from time import perf_counter
 from uuid import UUID
@@ -33,6 +33,7 @@ from qscan.adapters.persistence.migrations.schema_v1 import (
 )
 from qscan.adapters.persistence.migrations.schema_v2 import cache, prices
 from qscan.adapters.persistence.migrations.schema_v3 import runs
+from qscan.adapters.persistence.migrations.schema_v4 import reviews
 from qscan.application.contracts import (
     ApplicationContext,
     ApplicationError,
@@ -43,6 +44,7 @@ from qscan.application.contracts import (
     Progress,
     Provenance,
     Run,
+    SavedReview,
     ScanResult,
     Watchlist,
 )
@@ -738,3 +740,81 @@ class SQLiteRepository:
             if limit is not None:
                 statement = statement.limit(limit)
             return tuple(Run.model_validate(d) for d in connection.execute(statement).scalars())
+
+    # --- human review labels: mutable data, never part of scan results ---
+
+    def reviews_for_run(self, identity: UUID) -> tuple[SavedReview, ...]:
+        with self._read() as connection:
+            rows = connection.execute(
+                select(reviews)
+                .where(
+                    reviews.c.run_id == str(identity),
+                    reviews.c.owner_id == self.context.principal,
+                )
+                .order_by(reviews.c.instrument_id)
+            ).mappings()
+            return tuple(
+                SavedReview(
+                    run_id=UUID(row["run_id"]),
+                    instrument_id=UUID(row["instrument_id"]),
+                    label=row["label"],
+                    note=row["note"],
+                    revision=row["revision"],
+                    updated_at=datetime.fromisoformat(row["updated_at"]),
+                )
+                for row in rows
+            )
+
+    def save_review(
+        self,
+        identity: UUID,
+        instrument_id: UUID,
+        label: str,
+        note: str,
+        expected_revision: int | None,
+    ) -> SavedReview:
+        """Insert or update one label with optimistic revision concurrency.
+
+        A conflicting expected_revision is refused (never silently applied) so
+        two editors cannot overwrite each other; every write bumps revision.
+        """
+        now = self.clock.now().astimezone(UTC).isoformat()
+        with self._write() as connection:
+            existing = connection.execute(
+                select(reviews.c.revision).where(
+                    reviews.c.run_id == str(identity),
+                    reviews.c.instrument_id == str(instrument_id),
+                    reviews.c.owner_id == self.context.principal,
+                )
+            ).scalar_one_or_none()
+            if existing is not None and expected_revision is None:
+                # A blind PUT against an existing label would be a silent
+                # overwrite; require the current revision explicitly.
+                raise ApplicationError(ErrorCode.REVIEW_REVISION_CONFLICT)
+            if expected_revision is not None and existing != expected_revision:
+                raise ApplicationError(ErrorCode.REVIEW_REVISION_CONFLICT)
+            revision = (existing or 0) + 1
+            connection.execute(
+                sqlite_insert(reviews)
+                .values(
+                    owner_id=self.context.principal,
+                    run_id=str(identity),
+                    instrument_id=str(instrument_id),
+                    label=label,
+                    note=note,
+                    revision=revision,
+                    updated_at=now,
+                )
+                .on_conflict_do_update(
+                    index_elements=["owner_id", "run_id", "instrument_id"],
+                    set_={"label": label, "note": note, "revision": revision, "updated_at": now},
+                )
+            )
+            return SavedReview(
+                run_id=identity,
+                instrument_id=instrument_id,
+                label=label,
+                note=note,
+                revision=revision,
+                updated_at=datetime.fromisoformat(now),
+            )

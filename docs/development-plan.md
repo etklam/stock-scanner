@@ -906,6 +906,63 @@ thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測�
 **驗收：** 核心功能與可維護性證據齊備；真人覆核標記與本地多平台手跑屬已知未完成，
 見 checklist 第 5/8 節。V1 Definition of Done 對照亦記錄於該 checklist。
 
+### Phase 6A — Local Candidate Review Workbench（2026-09-06 本輪交付）
+
+**目的：** 完成單人本地「選名單→掃描→查看候選與 Close 圖→保存覆核」的完整
+瀏覽器流程；所有策略與資料語義仍來自同一套 Python/API。本輪分兩部分：
+先修正 5.1 遺留邊界（A），再喺既有 API 上加薄型本地覆核介面（B）。
+
+**A. 修正（不改 score/gate/stage/window/價格口徑）：**
+
+- [x] 排程 wrapper pending 意圖優先：已保存、結果未知的提交先以原 key／
+  原 body／原 scan ID 恢復，唔會用今日 session/revision/provider 重建；
+  改名／改 revision 唔擋恢復；pending 期間 `--force` 拒絕（exit 4）；
+  API 意圖 pending＋server 不可達唔退回 CLI；provider 身份以 server
+  `/health/live` 為準；state 損壞隔離並聲明去重保證收窄。
+- [x] wrapper 錯誤契約：stdout 只有一份 JSON、diagnostics 全 stderr、無
+  traceback/token；exit 1/2/3/4 如實；CLI 子程序同時檢查 exit code 同
+  JSON 形狀，error envelope 唔當 run document；polling timeout 保留 pending。
+- [x] 備份收尾：DB entry 串流落碟＋增量 hash（verify 同 restore）；
+  manifest 計入統一總讀取預算；共用 bounded snapshot 驗證（hash＋支援
+  schema＋canonical bytes）——verify 接受嘅 snapshot 正式 reader 一定可讀；
+  staging 用唯一檔案，發布以 no-clobber link＋O_EXCL fallback，唔用
+  `exists()`＋可覆蓋 rename 冒稱原子。
+- [x] 本地驗收可信度：connect_ex 防護＋stub yfinance 實際依賴的 native
+  transport（curl_cffi）並如實聲明覆蓋範圍；每個 spawned interpreter 經
+  sitecustomize guard；完整 release gate 對受影響 SQLite runtime 明確失敗
+  （`--fast` 係開發快檢，唔係 acceptance）；wheel smoke 核對 fresh venv
+  內實際 runtime；doctor 記錄實際 Python/SQLite。
+
+**B. 薄型本地 Web 介面（React＋TypeScript＋Vite，`web/`）：**
+
+- [x] 三個畫面：名單與掃描（Idempotency-Key、pending 恢復、進度輪詢、
+  StrictMode/reload 唔自動 POST 新掃描）、歷史（cursor 分頁、候選／全部
+  有效評估、各 state 獨立呈現、資料失敗唔係普通非候選）、候選詳情
+  （手寫 SVG Close/SMA 圖、缺失 SMA 畫空隙唔畫 0、常數序列唔壞、固定
+  中文原因 mapping＋未知 code fallback、只載入選中標的、切換取消舊請求）。
+- [x] 集中 typed API client：型別由 OpenAPI 生成（openapi-typescript）並有
+  contract check；集中 ErrorEnvelope/401/409/429/timeout；retry 沿用原
+  key/body；terminal 停止輪詢；429 有界退避。token 只喺記憶體；401/輪換
+  清敏感 cache、保留非機密 pending。
+- [x] 本地安全：正式 UI 同 origin（serve 自己嘅 loopback origins 構成
+  allowlist，不反射 request）；`--dev-origin` 係明確開發設定，proxy 唔剝
+  Origin；UI shell 匿名、業務 API 全部要 token；`/api` 404 唔被 SPA fallback
+  吃掉；React escaping，無 HTML 注入。
+- [x] 最小覆核資料：migration 0004 `scan_reviews`（principal+run+instrument
+  scope、revision 衝突回 409、只可標記有有效 evaluation 的標的）；獨立於
+  immutable results；replay 唔繼承；備份還原 round-trip；review-export CSV
+  併入已保存標記＋匯出時間注明。
+- [x] Wheel 內置編譯 UI：`npm run build` 輸出進 package，`uv build` 打包；
+  installed-wheel smoke 驗證 `/ui/` 匿名 shell＋業務 API 認證不變；使用者
+  唔需要 Node。
+- [x] 測試：frontend typecheck/lint/vitest/build／OpenAPI-TS contract check；
+  真實本機 API＋fixture 嘅瀏覽器 E2E（連線→建名單→提交→terminal→候選→
+  圖及原因→保存覆核→reload 重新認證→標記仍在→單一 run 無重建）；
+  1280px／390px 真實瀏覽器截圖視覺驗收。
+
+實測證據、未完成項（真人標記、跨平台手跑）與本輪範圍見
+[release checklist](release-checklist.md) Phase 6A 節。
+
 ---
 
 ## 14. V1 Definition of Done

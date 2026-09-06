@@ -80,6 +80,9 @@ CONTROL_SCRIPT = textwrap.dedent(
 ).replace("CLOSES", repr(CLOSES))
 
 SRC_ROOT = str(Path(__file__).parents[2] / "src")
+# Every spawned interpreter gets the offline guard via sitecustomize:
+OFFLINE_GUARD = str(Path(__file__).parents[2] / "tests" / "_offline_guard")
+SRC_ROOT_AND_GUARD = OFFLINE_GUARD + os.pathsep + SRC_ROOT
 
 
 def free_port() -> int:
@@ -99,7 +102,7 @@ def start_server(data_dir: Path, hold: Path, workdir: Path) -> tuple[subprocess.
         cwd=workdir,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
     deadline = time.monotonic() + 60
     while time.monotonic() < deadline:
@@ -285,7 +288,7 @@ def run_cli_scan(directory: Path, workdir: Path) -> subprocess.CompletedProcess:
         capture_output=True,
         text=True,
         timeout=120,
-        env={**os.environ, "PYTHONPATH": SRC_ROOT},
+        env={**os.environ, "PYTHONPATH": SRC_ROOT_AND_GUARD},
     )
 
 

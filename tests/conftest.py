@@ -1,30 +1,33 @@
 """Shared offline guarantees for the whole suite (local gate only, no hosted CI).
 
-Every in-process test runs with outbound sockets hard-blocked: only loopback
-(127.0.0.1 / ::1 / unix sockets) may connect. This is enforcement, not a
-timeout: an accidental Yahoo call fails the test immediately. Subprocess
-harnesses are separate processes and stay offline by construction — they use
-the fixture provider and loopback-only endpoints, never the default provider.
+The guard lives in ``tests/_offline_guard/sitecustomize.py`` so the SAME rules
+apply to every interpreter: conftest installs it for the in-process suite, and
+harnesses prepend its directory to PYTHONPATH so spawned interpreters (serve,
+CLI, scheduler wrapper, wheel smoke) import it automatically at startup. It
+refuses outbound Python-socket connects (``connect``/``connect_ex``) except to
+loopback — enforcement, not a timeout — and stubs the native HTTP transports
+the provider stack depends on (yfinance's curl_cffi, plus pycurl when present)
+at their Python entry points, which the socket patch cannot see, so a fixture
+test that strays into the real Yahoo downloader fails loudly instead of
+reaching the network. The guard does NOT claim to intercept every conceivable
+native HTTP library; it names and neutralizes the ones this project uses.
 """
 
-import socket
+import importlib.util
+from pathlib import Path
 
 import pytest
 
-_LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+_GUARD = Path(__file__).parent / "_offline_guard" / "sitecustomize.py"
+
+_spec = importlib.util.spec_from_file_location("qscan_offline_guard", _GUARD)
+assert _spec is not None and _spec.loader is not None
+_guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(_guard)
 
 
 @pytest.fixture(autouse=True)
-def block_outbound_network(monkeypatch):
-    real_connect = socket.socket.connect
-
-    def guarded(self, address):
-        if isinstance(address, tuple):
-            host = address[0]
-            if isinstance(host, str) and host not in _LOOPBACK:
-                raise AssertionError(
-                    f"offline suite attempted an outbound connection to {address!r}"
-                )
-        return real_connect(self, address)
-
-    monkeypatch.setattr(socket.socket, "connect", guarded)
+def offline_guard_installed():
+    """Fail loudly if the socket guard is somehow not active for a test."""
+    assert _guard.active, "offline socket guard failed to install"
+    yield

@@ -230,7 +230,7 @@ uv run qscan --data-dir "$HOME/qscan-restored" init        # 如 schema 較舊�
 **規則：** `serve` 在跑 → 只用 HTTP client 提交；serve 沒跑 → 用獨立 CLI scan。
 **永遠不要**在 serve 運行時對同一資料目錄直接跑 CLI `scan`（會 exit 4）。
 
-**去重與意圖（5.1 修正後語義）：**
+**去重與意圖（6A 修正後語義——pending 意圖優先恢復）：**
 - 「是否已掃過」由**市場日曆服務解析的最新完成 session** 決定（`qscan sessions`
   或 `GET /api/v1/sessions/current`），wrapper 不自行判斷假期／DST／收市時間，
   也不以本地日期作身份。
@@ -238,18 +238,34 @@ uv run qscan --data-dir "$HOME/qscan-restored" init        # 如 schema 較舊�
   attempt）。Idempotency-Key 是該身份的 SHA-256——重試、斷線、程序重啟沿用
   **同一 key 與同一 body**；`--force` 遞增 attempt（新意圖、新 key），該次意圖內
   的重試仍用新 key。
+- **已保存、結果未知的提交（state SUBMITTED）係獨立、不可變的 pending
+  意圖**：wrapper 先用其原 key／原 body／原 scan ID 恢復，**唔會**用今日
+  session/revision/provider 重建；名單改名或 revision 改變都擋唔住以已保存
+  ID 恢復。pending 完成後先判斷是否需要新 session 的新意圖。
+- **pending 期間 `--force` 被拒（exit 4）**：強制會孤兒化一個 server 可能已
+  接受的意圖；先解決 pending，之後先 `--force`。
+- **API 意圖 pending 而連唔到 server → 唔會退回 CLI**（exit 4，可恢復）：
+  CLI 無 idempotency key，退回會造成重複。
+- **provider 身份以實際 server 為準**：wrapper 會核對 `GET /health/live` 的
+  `provider` 欄位；`--provider` 與 serve 不一致係設定錯誤（exit 2），
+  唔會靜默去重。
+- state 缺失／損壞會隔離並大聲記錄：key 由意圖身份決定性導出，丟失紀錄
+  最壞只會重放舊 attempt 的 key，唔會靜默重複；wrapper 唔宣稱能由未知
+  狀態精確去重。
 - **名單修改（revision 變更）＝新意圖**：會重新掃描；相同身份的重跑不會：
   SUCCEEDED → exit 0、PARTIAL → exit 3（視為已涵蓋，補掃請 `--force`）、
   FAILED → **exit 1**（不自動重試失敗任務；要重掃請 `--force`）。
 - watchlist 接受 name 或 UUID；name 歧義時拒絕（exit 2），不猜第一個。
 - HTTP 已可能接受請求後**永不退回 CLI**：401/403/409 是設定／意圖錯誤（exit 2）、
-  429 與 timeout 是 busy（exit 4，可恢復——下次觸發先查詢或重放原 key）。
+  429 與 timeout 是 busy（exit 4，可恢復——pending 保留，唔會寫成終局 FAILED）。
 - state：`<data-dir>/daily-scan-state.json`（版本化），以 wrapper 專屬
   `daily-scan.lock` 串行化 + 唯一暫存檔原子寫；該 lock 不觸 executor.lock，
   不會與 serve 死鎖。同一資料目錄同時只有一個 wrapper 操作（並發觸發會等待後
   去重，或 exit 4）。
-- exit 0/1/2/3/4 與 CLI 一致；token 只進 Authorization header（不進 URL／log／
-  排程定義）。
+- stdout 永遠只有一份 JSON（成功係結果摘要、失敗係 error envelope）；
+  CLI 子程序同時檢查 exit code 與文件形狀，error envelope 唔會當成 run
+  document。exit 0/1/2/3/4 與 CLI 一致；token 只進 Authorization header
+  （不進 URL／log／排程定義）。
 
 macOS launchd（`~/Library/LaunchAgents/com.qscan.daily.plist`）：
 
@@ -299,3 +315,66 @@ session，可用 `--force` 重跑。排程不執行 `uv sync`／依賴升級。
   payload 不出現在任何輸出。
 - `doctor`：預設離線、只做輕量檢查；`--online` 才做一次外部診斷（仍不改 gate）。
   深度全庫掃描未提供——如需要，直接 `backup verify`（含 integrity/FK/引用檢查）。
+  診斷記錄**實際載入嘅** Python（版本＋路徑）與 SQLite runtime（含 advisory 判定）。
+
+## Phase 6A：本地覆核 UI（/ui/）、reviews 與驗證可信度
+
+### 本地 Web 介面
+
+- `qscan serve` 之後，瀏覽器開 `http://127.0.0.1:<port>/ui/`。編譯後靜態
+  assets 由 wheel 附帶（`qscan/interfaces/web/dist`）；**使用者安裝 wheel 後
+  完全唔需要 Node/npm**，serve 亦唔會喺使用者機器行 npm。
+- source checkout 缺 build assets 時，`/ui/` 回 404 並列出確實命令
+  （`cd web && npm ci && npm run build`）。build 有明確、可重跑流程：
+  `npm run build` 直接輸出到 package 內，再 `uv build` 就會打包進 wheel。
+- UI token 只喺記憶體：唔寫 localStorage/sessionStorage/URL；401／token
+  輪換會要求重新連線並清空敏感 query cache（非機密的 pending key/body 保留，
+  重新認證後恢復）。業務 API 全部要 bearer token；未連線唔會偷發私人請求。
+- 開發模式：`npm run dev`（Vite :5173 proxy 到 127.0.0.1:8000）＋
+  `qscan serve --dev-origin http://localhost:5173`。proxy **唔會剝除 Origin**；
+  放行靠明確 dev 設定。正式使用係同 origin，外部/null Origin 繼續 403。
+- UI 三個畫面：名單與掃描（idempotency key、pending 恢復、進度輪詢）、
+  歷史（cursor 分頁、各 state 獨立呈現）、候選詳情（SVG Close/SMA 圖、
+  中文原因 mapping、三個覆核標記）。
+
+### 人工覆核標記（reviews）
+
+- 資料喺 `scan_reviews`（migration 0004，向後相容；舊目錄 `qscan init` 升級），
+  備份／還原自動包含，round-trip 有測試。保存標記唔會改寫 score/rank/hash；
+  replay 由零開始；標記唔會自動帶去第二日。
+- `scans review-export` CSV 現併入已保存標記（`label/notes/review_revision/
+  review_updated_at` 欄）並在摘要注明**匯出時間與可變資料性質**，唔冒充
+  immutable scan snapshot。
+
+### 離線測試可信度（6A 加固）
+
+- 每個 spawned interpreter（serve／CLI／wrapper／wheel-smoke venv）經
+  `PYTHONPATH` 前置 `tests/_offline_guard/sitecustomize.py`：出站 socket
+  connect／connect_ex 僅容許 loopback，並喺 Python 層 stub 掉 provider stack
+  實際依賴嘅 native HTTP transport（yfinance→curl_cffi；pycurl 存在時一併）。
+  誠實限制：只覆蓋 Python socket 層與已點名 stub 嘅 native client，
+  唔宣稱攔截所有 native HTTP library。
+- `scripts/check.py` 完整 gate 會記錄實際 Python／SQLite runtime，並對已知
+  受 SQLite WAL-reset bug 影響的 runtime **明確失敗**；`--fast` 係開發快檢，
+  唔代表 release acceptance。wheel smoke 另外核對 fresh venv 內實際運行
+  wheel 的 runtime identity（uv venv 可能解析出唔同 python）。
+
+### Frontend 檢查與瀏覽器 E2E
+
+```sh
+cd web
+npm ci                      # 一次性；鎖定版本於 package-lock.json
+npm run typecheck           # tsc --noEmit
+npm run lint                # eslint
+npm run test                # vitest（client／pending／chart／review panel）
+npm run build               # 產生 src/qscan/interfaces/web/dist
+npm run check:contract      # OpenAPI → TypeScript 再生成比對
+npm run test:e2e            # 真實瀏覽器 E2E（本機 serve + fixture + Chrome）
+node e2e/visual.mjs         # 1280px／390px 截圖與佈局斷言（需 serve 運行中）
+```
+
+`scripts/check.py --fast` 包含 frontend typecheck／lint／tests（無 Node 時
+明確 SKIP，唔會假通過）；完整 gate 另含 production build＋`uv build`＋
+wheel smoke（wheel smoke 會驗證 installed wheel 的 `/ui/` 匿名 shell、
+`/api` 404 JSON、業務 API 仍然要 token）。瀏覽器 E2E 禁第三方網絡
+（DNS poisoned 至 NOTFOUND，僅 loopback），只用合成 token 與 fixture 資料。

@@ -42,10 +42,15 @@ class Harness:
         self.calendar = NYSECalendar()
         self.clock = clock or FixedClock(datetime(2026, 9, 5, 12, tzinfo=UTC))
         self.data_dir = data_dir_override or (tmp_path / "資料 data")
+        data = kwargs.pop("data", None)
         self.provider = FixtureProvider(
-            {"GOOD": RawPrices(RISING), "FLAT": RawPrices(FLAT), "DOWN": RawPrices(FALLING)}
+            data
+            if data is not None
+            else {"GOOD": RawPrices(RISING), "FLAT": RawPrices(FLAT), "DOWN": RawPrices(FALLING)}
         )
         self.principal = kwargs.pop("principal", "local")
+        allowed_origins = kwargs.pop("allowed_origins", ())
+        ui_assets = kwargs.pop("ui_assets", None)
         self.app = bootstrap(
             self.provider,
             data_dir=self.data_dir,
@@ -68,6 +73,8 @@ class Harness:
             executor=self.executor,
             queue_limit=kwargs.get("queue_limit", 20),
             allowed_hosts=("testserver",),
+            allowed_origins=allowed_origins,
+            ui_assets=ui_assets,
         )
         self.token = json.loads(token_path.read_text())["token"]
         self.executor.start()

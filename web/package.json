@@ -1,0 +1,44 @@
+{
+  "name": "qscan-web",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "Local candidate-review workbench for qscan serve (same-origin, token in memory only).",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "generate:api": "openapi-typescript ../docs/openapi.json -o src/api/schema.d.ts",
+    "check:contract": "openapi-typescript ../docs/openapi.json -o src/api/schema.checked.d.ts && diff -q src/api/schema.d.ts src/api/schema.checked.d.ts && rm src/api/schema.checked.d.ts",
+    "test:e2e": "playwright test"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.90.0",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.0",
+    "@playwright/test": "^1.63.0",
+    "@testing-library/dom": "^10.4.0",
+    "@testing-library/react": "^16.3.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.1.0",
+    "eslint": "^9.39.0",
+    "jsdom": "^27.0.0",
+    "openapi-typescript": "^7.10.0",
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.51.0",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
+  }
+}

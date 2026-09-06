@@ -48,6 +48,7 @@ from filelock import FileLock
 from pydantic import ValidationError
 
 from qscan import __version__
+from qscan.adapters.snapshots import canonical
 from qscan.application.contracts import ApplicationError, InputSnapshot
 from qscan.domain.models import ErrorCode, RunState
 
@@ -155,6 +156,45 @@ def _read_bounded(
     return b"".join(chunks)
 
 
+def _extract_bounded(
+    bundle: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    budget: dict[str, int],
+    cap: int,
+    destination: Path,
+) -> tuple[str, int]:
+    """Stream one large entry straight to disk with an incremental hash.
+
+    The database entry can be gigabytes; it is never fully resident. Caps and
+    the shared budget are enforced WHILE reading, so a bomb fails at the cap
+    instead of after allocating."""
+    if info.file_size > cap:
+        raise _fail(
+            ErrorCode.VALIDATION_ERROR, f"Archive entry exceeds size limits: {info.filename}"
+        )
+    if budget["remaining"] < info.file_size:
+        raise _fail(
+            ErrorCode.VALIDATION_ERROR,
+            f"Archive exceeds the total size budget at {info.filename}",
+        )
+    digest = hashlib.sha256()
+    taken = 0
+    with bundle.open(info) as stream, destination.open("wb") as target:
+        while chunk := stream.read(1024 * 1024):
+            taken += len(chunk)
+            if taken > cap or budget["remaining"] - taken < 0:
+                raise _fail(
+                    ErrorCode.VALIDATION_ERROR,
+                    f"Archive entry exceeds size limits: {info.filename}",
+                )
+            digest.update(chunk)
+            target.write(chunk)
+        target.flush()
+        os.fsync(target.fileno())
+    budget["remaining"] -= taken
+    return digest.hexdigest(), taken
+
+
 def _typed_manifest(manifest: Any) -> dict[str, Any]:
     """Structural validation with typed errors; no bare KeyError may escape."""
     if not isinstance(manifest, dict):
@@ -204,16 +244,16 @@ def _typed_manifest(manifest: Any) -> dict[str, Any]:
     return manifest
 
 
-def _read_manifest(bundle: zipfile.ZipFile, infos: dict[str, zipfile.ZipInfo]) -> dict[str, Any]:
+def _read_manifest(
+    bundle: zipfile.ZipFile, infos: dict[str, zipfile.ZipInfo], budget: dict[str, int]
+) -> dict[str, Any]:
     if _MANIFEST_ENTRY not in infos:
         raise _fail(ErrorCode.VALIDATION_ERROR, "Archive has no backup manifest")
-    if infos[_MANIFEST_ENTRY].file_size > _MANIFEST_BYTES:
-        raise _fail(
-            ErrorCode.VALIDATION_ERROR,
-            f"Backup manifest exceeds {_MANIFEST_BYTES} bytes and is rejected before reading",
-        )
+    # The manifest counts against the SAME total budget as every other entry,
+    # so archive-wide read limits stay consistent.
     try:
-        manifest = json.loads(bundle.read(infos[_MANIFEST_ENTRY]))
+        raw = _read_bounded(bundle, infos[_MANIFEST_ENTRY], budget, _MANIFEST_BYTES)
+        manifest = json.loads(raw)
     except (ValueError, zipfile.BadZipFile) as exc:
         raise _fail(ErrorCode.VALIDATION_ERROR, "Backup manifest is not valid JSON") from exc
     return _typed_manifest(manifest)
@@ -264,11 +304,16 @@ def _database_report(path: Path) -> dict[str, Any]:
         connection.close()
 
 
-def _decode_snapshot(digest: str, compressed: bytes) -> bytes:
-    """Bounds-checked gunzip (multi-member safe) plus content-address check.
+def _validated_plain(digest: str, compressed: bytes) -> bytes:
+    """Shared bounded snapshot validation: hash, supported schema, canonical bytes.
 
-    Returns the plain canonical bytes so the caller can also validate the
-    snapshot schema; a correct hash alone never proves a decodable format.
+    This is the single gate used by backup creation, verification, and restore.
+    It accepts exactly what the formal snapshot reader accepts: bounds-checked
+    gunzip, content-address match, a decodable schema-1 snapshot, and canonical
+    serialization (a merely hash-valid but noncanonical document is rejected,
+    so anything backup verify accepts, SnapshotStore.read can read too).
+    Historical-format readability and exact-replay engine compatibility stay
+    separate concerns (engine checks live in verify warnings / replay service).
     """
     digest_stream = hashlib.sha256()
     chunks: list[bytes] = []
@@ -286,9 +331,20 @@ def _decode_snapshot(digest: str, compressed: bytes) -> bytes:
                 chunks.append(chunk)
     except (OSError, EOFError, ValueError, zlib.error) as exc:
         raise _fail(ErrorCode.VALIDATION_ERROR, f"Snapshot {digest} is not readable gzip") from exc
+    plain = b"".join(chunks)
     if digest_stream.hexdigest() != digest:
         raise _fail(ErrorCode.VALIDATION_ERROR, f"Snapshot {digest} content hash mismatch")
-    return b"".join(chunks)
+    try:
+        value = InputSnapshot.model_validate_json(plain)
+    except ValidationError as exc:
+        raise _fail(
+            ErrorCode.VALIDATION_ERROR,
+            f"Snapshot {digest} is not a supported snapshot schema "
+            f"({exc.error_count()} validation error(s))",
+        ) from exc
+    if canonical(value) != plain:
+        raise _fail(ErrorCode.VALIDATION_ERROR, f"Snapshot {digest} is not canonical")
+    return plain
 
 
 def _snapshot_table(manifest: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -304,7 +360,8 @@ def _verify_bundle(bundle: zipfile.ZipFile) -> tuple[dict[str, Any], dict[str, A
     """Full verification of an already-opened archive. Both verify and restore
     use this on the SAME opened source, so nothing can trust a stale check."""
     infos = _entry_names(bundle)
-    manifest = _read_manifest(bundle, infos)
+    budget = {"remaining": _MAX_TOTAL_BYTES}
+    manifest = _read_manifest(bundle, infos, budget)
     snapshot_table = _snapshot_table(manifest)
     settings = manifest.get("settings", {}).get("files", {})
 
@@ -329,12 +386,11 @@ def _verify_bundle(bundle: zipfile.ZipFile) -> tuple[dict[str, Any], dict[str, A
             ErrorCode.VALIDATION_ERROR, f"Archive is missing declared entries: {sorted(missing)}"
         )
 
-    budget = {"remaining": _MAX_TOTAL_BYTES}
     with tempfile.TemporaryDirectory(prefix="qscan-verify-") as temporary:
         db_copy = Path(temporary) / "qscan.sqlite3"
-        db_bytes = _read_bounded(bundle, infos[_DB_ENTRY], budget, _MAX_DB_ENTRY_BYTES)
-        db_copy.write_bytes(db_bytes)
-        sha, size = _sha256_file(db_copy)
+        # The database entry streams to disk with an incremental hash; it is
+        # never fully resident in memory.
+        sha, size = _extract_bounded(bundle, infos[_DB_ENTRY], budget, _MAX_DB_ENTRY_BYTES, db_copy)
         database = manifest["database"]
         if sha != database["sha256"] or size != database["size_bytes"]:
             raise _fail(ErrorCode.VALIDATION_ERROR, "Database hash does not match the manifest")
@@ -358,15 +414,8 @@ def _verify_bundle(bundle: zipfile.ZipFile) -> tuple[dict[str, Any], dict[str, A
                 raise _fail(ErrorCode.VALIDATION_ERROR, f"Snapshot {digest} size mismatch")
             if hashlib.sha256(compressed).hexdigest() != recorded["sha256"]:
                 raise _fail(ErrorCode.VALIDATION_ERROR, f"Snapshot {digest} hash mismatch")
-            plain = _decode_snapshot(digest, compressed)
-            try:
-                InputSnapshot.model_validate_json(plain)
-            except ValidationError as exc:
-                raise _fail(
-                    ErrorCode.VALIDATION_ERROR,
-                    f"Snapshot {digest} is not a supported snapshot schema "
-                    f"({exc.error_count()} validation error(s))",
-                ) from exc
+            # Shared gate: hash + supported schema + canonical bytes.
+            _validated_plain(digest, compressed)
 
         for digest in sorted(set(snapshot_table) - report["snapshot_digests"]):
             raise _fail(
@@ -433,7 +482,13 @@ def create_backup(source: Path, output: Path) -> dict[str, Any]:
     lock.acquire(timeout=_LOCK_TIMEOUT)
     try:
         work = Path(tempfile.mkdtemp(prefix="qscan-backup-"))
-        staging = output.parent / f".{output.name}.staging"
+        # Unique staging file: two concurrent backups (or a crashed one) can
+        # never clobber each other's partial archive.
+        handle, staging_name = tempfile.mkstemp(
+            dir=str(output.parent), prefix=f".{output.name}.staging-"
+        )
+        os.close(handle)
+        staging = Path(staging_name)
     except Exception:
         lock.release()
         raise
@@ -463,14 +518,9 @@ def create_backup(source: Path, output: Path) -> dict[str, Any]:
                     ErrorCode.VALIDATION_ERROR,
                     f"Snapshot {digest} exceeds the archive entry limit",
                 )
-            plain = _decode_snapshot(digest, compressed)  # corrupt source fails the backup
-            try:
-                InputSnapshot.model_validate_json(plain)
-            except ValidationError as exc:
-                raise _fail(
-                    ErrorCode.VALIDATION_ERROR,
-                    f"Snapshot {digest} is not a supported snapshot schema; backup aborted",
-                ) from exc
+            # The SAME shared gate the verifier uses: a corrupt or noncanonical
+            # source snapshot fails the backup instead of being archived.
+            _validated_plain(digest, compressed)
             snapshot_dir.mkdir(exist_ok=True)
             (snapshot_dir / f"{digest}.json.gz").write_bytes(compressed)
             snapshots.append(
@@ -528,18 +578,7 @@ def create_backup(source: Path, output: Path) -> dict[str, Any]:
 
         with zipfile.ZipFile(staging) as bundle:
             _verify_bundle(bundle)  # never publish an archive we did not verify
-        try:
-            os.link(staging, output)  # fails if output appeared meanwhile
-        except FileExistsError as exc:
-            raise _fail(
-                ErrorCode.VALIDATION_ERROR, f"Refusing to overwrite existing {output}"
-            ) from exc
-        except OSError:
-            if output.exists():
-                raise _fail(
-                    ErrorCode.VALIDATION_ERROR, f"Refusing to overwrite existing {output}"
-                ) from None
-            os.rename(staging, output)
+        _publish_no_overwrite(staging, output)
         return manifest
     finally:
         shutil.rmtree(work, ignore_errors=True)
@@ -549,6 +588,37 @@ def create_backup(source: Path, output: Path) -> dict[str, Any]:
             except OSError:
                 pass
         lock.release()
+
+
+def _publish_no_overwrite(staging: Path, output: Path) -> None:
+    """Publish the verified archive without ever overwriting.
+
+    Primary path is an atomic no-clobber hardlink. On filesystems without
+    hardlink support the fallback claims the destination with O_EXCL and
+    copies — an exclusive create that cannot silently replace a file that
+    appeared in the meantime (a plain rename would)."""
+    try:
+        os.link(staging, output)  # fails if output appeared meanwhile
+    except FileExistsError as exc:
+        raise _fail(ErrorCode.VALIDATION_ERROR, f"Refusing to overwrite existing {output}") from exc
+    except OSError:
+        try:
+            descriptor = os.open(output, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError as exc:
+            raise _fail(
+                ErrorCode.VALIDATION_ERROR, f"Refusing to overwrite existing {output}"
+            ) from exc
+        try:
+            with os.fdopen(descriptor, "wb") as target, staging.open("rb") as source:
+                shutil.copyfileobj(source, target, 1024 * 1024)
+                target.flush()
+                os.fsync(target.fileno())
+        except BaseException:
+            try:
+                os.unlink(output)  # never leave a partial publication behind
+            except OSError:
+                pass
+            raise
 
 
 def verify_backup(archive: Path) -> dict[str, Any]:
@@ -603,9 +673,21 @@ def restore_backup(archive: Path, destination: Path) -> dict[str, Any]:
                     target = staging / name
                 else:
                     raise _fail(ErrorCode.VALIDATION_ERROR, f"Unexpected archive entry: {name!r}")
-                cap = _MAX_DB_ENTRY_BYTES if name == _DB_ENTRY else _MAX_SNAPSHOT_ENTRY_BYTES
                 target.parent.mkdir(parents=True, exist_ok=True)
-                target.write_bytes(_read_bounded(bundle, info, budget, cap))
+                if name == _DB_ENTRY:
+                    # Streamed straight to disk with an incremental hash; the
+                    # digest is re-checked against the manifest after extract.
+                    sha, size = _extract_bounded(bundle, info, budget, _MAX_DB_ENTRY_BYTES, target)
+                    database = manifest["database"]
+                    if sha != database["sha256"] or size != database["size_bytes"]:
+                        raise _fail(
+                            ErrorCode.VALIDATION_ERROR,
+                            "Database hash does not match the manifest",
+                        )
+                else:
+                    target.write_bytes(
+                        _read_bounded(bundle, info, budget, _MAX_SNAPSHOT_ENTRY_BYTES)
+                    )
         try:
             handle = os.open(claim, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
             os.close(handle)
