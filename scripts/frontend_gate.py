@@ -5,9 +5,10 @@ Dev quick-check (default): typecheck + lint + unit tests. Requires node/npm;
 prints a clear SKIP notice when they are absent because a dev machine without
 Node is still able to run the Python-only CLI/API.
 
-Release mode (--release): additionally runs the PRODUCTION BUILD, which
-places the compiled assets into src/qscan/interfaces/web/dist so the wheel
-ships them. A release gate without a built UI is a failure, not a pass.
+Release mode (--release): additionally checks the generated TypeScript API
+contract, runs the production BUILD, and runs browser E2E against a real local
+serve process. Missing Node, npm, or the configured Chrome browser is a
+failure in release mode, not a pass.
 """
 
 import argparse
@@ -18,12 +19,16 @@ from pathlib import Path
 
 WEB = Path(__file__).resolve().parents[1] / "web"
 FAST_STEPS = ["typecheck", "lint", "test"]
-RELEASE_EXTRA = ["build"]
+RELEASE_EXTRA = ["check:contract", "build", "test:e2e"]
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--release", action="store_true", help="Also run the production build")
+    parser.add_argument(
+        "--release",
+        action="store_true",
+        help="Also run contract, production build, and browser E2E checks",
+    )
     arguments = parser.parse_args()
     npm = shutil.which("npm")
     node = shutil.which("node")

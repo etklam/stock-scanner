@@ -28,6 +28,8 @@ function run(args) {
 mkdirSync(DATA, { recursive: true });
 run(["--data-dir", DATA, "init"]);
 const demo = JSON.parse(run(["--data-dir", DATA, "demo"]));
+const demoClock = new Date(`${demo.as_of}T12:00:00Z`);
+demoClock.setUTCDate(demoClock.getUTCDate() + 1);
 
 const serve = spawn(
   QSCAN[0],
@@ -40,6 +42,8 @@ const serve = spawn(
     "serve",
     "--port",
     String(PORT),
+    "--dev-clock-at",
+    demoClock.toISOString(),
   ],
   { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] },
 );

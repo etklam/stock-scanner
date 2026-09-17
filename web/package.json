@@ -14,7 +14,7 @@
     "lint": "eslint .",
     "test": "vitest run",
     "generate:api": "openapi-typescript ../docs/openapi.json -o src/api/schema.d.ts",
-    "check:contract": "openapi-typescript ../docs/openapi.json -o src/api/schema.checked.d.ts && diff -q src/api/schema.d.ts src/api/schema.checked.d.ts && rm src/api/schema.checked.d.ts",
+    "check:contract": "node scripts/check-contract.mjs",
     "test:e2e": "playwright test"
   },
   "dependencies": {

@@ -98,11 +98,23 @@ def review_samples(
     sheet are appended so an export never quietly drops a human decision.
     """
     saved = {review.instrument_id: review for review in reviews}
+    # The persisted contract normally guarantees one result per instrument,
+    # but keep exports identity-keyed even when an old/corrupt document has
+    # duplicate rows. Preserve the first row so fixed-seed sampling and the
+    # candidate/control ordering remain unchanged for valid runs.
+    unique_results: list[ScanResult] = []
+    seen_instruments: set[UUID] = set()
+    for result in run.results:
+        identity = result.instrument.id
+        if identity in seen_instruments:
+            continue
+        seen_instruments.add(identity)
+        unique_results.append(result)
     candidates = sorted(
-        (r for r in run.results if r.analysis.is_candidate), key=lambda r: r.rank or 0
+        (r for r in unique_results if r.analysis.is_candidate), key=lambda r: r.rank or 0
     )
     evaluated_non = sorted(
-        (r for r in run.results if r.category == "evaluated" and not r.analysis.is_candidate),
+        (r for r in unique_results if r.category == "evaluated" and not r.analysis.is_candidate),
         key=lambda r: str(r.instrument.id),
     )
     chosen = random.Random(seed).sample(evaluated_non, min(non_candidates, len(evaluated_non)))
@@ -127,13 +139,15 @@ def review_samples(
         }
 
     rows = [row(result) for result in (*candidates, *chosen)]
-    sheet_ids = {r["instrument_id"] for r in rows}
+    # Rows are serialized for CSV, so compare the same string identity type
+    # when deciding whether an already-exported review needs appending.
+    sheet_ids = {str(r["instrument_id"]) for r in rows}
     # Labeled instruments missing from candidates/sample keep their verdicts.
-    evaluated = [r for r in run.results if r.category == "evaluated"]
+    evaluated = [r for r in unique_results if r.category == "evaluated"]
     rows.extend(
         row(result)
         for result in evaluated
-        if result.instrument.id in saved and result.instrument.id not in sheet_ids
+        if result.instrument.id in saved and str(result.instrument.id) not in sheet_ids
     )
     return {
         "columns": list(_COLUMNS),
@@ -141,13 +155,13 @@ def review_samples(
         "candidate_count": len(candidates),
         "non_candidate_pool": len(evaluated_non),
         "non_candidate_sampled": len(chosen),
-        "excluded_count": sum(1 for r in run.results if r.category == "excluded"),
+        "excluded_count": sum(1 for r in unique_results if r.category == "excluded"),
         "data_errors": [
             {
                 "instrument": r.instrument.display_symbol,
                 "reasons": ",".join(reason.code for reason in r.analysis.reasons),
             }
-            for r in run.results
+            for r in unique_results
             if r.category == "data_error"
         ],
         "labels": list(LABELS),

@@ -28,6 +28,7 @@ from qscan import __version__
 from qscan.adapters.report_renderer import render
 from qscan.application.contracts import (
     ApplicationError,
+    Clock,
     Comparison,
     Run,
     SavedReview,
@@ -859,6 +860,7 @@ def run_serve(
     port: int = 8000,
     queue_limit: int = 20,
     stop_grace: float = 30.0,
+    clock: Clock | None = None,
     dev_openapi: bool = False,
     dev_origins: tuple[str, ...] = (),
     log_level: str = "warning",
@@ -872,7 +874,9 @@ def run_serve(
 
     created = ensure_token(token_path)[1]
     try:
-        scanner = bootstrap(provider, data_dir=data_dir, initialize=False, service_lock=NullLock())
+        scanner = bootstrap(
+            provider, data_dir=data_dir, initialize=False, service_lock=NullLock(), clock=clock
+        )
     except ApplicationError as exc:
         emit_error(exc.code.value, str(exc) or "Run qscan init to create the data directory")
         return 2

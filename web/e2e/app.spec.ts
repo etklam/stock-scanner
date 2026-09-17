@@ -13,6 +13,7 @@ const state = JSON.parse(
 
 // Unique per run: a reused serve keeps its previous data directory.
 const listName = `e2e-list-${Date.now()}`;
+let e2eScanId = "";
 
 test.describe.configure({ mode: "serial" });
 
@@ -49,6 +50,8 @@ test("creates a list, submits one scan, reaches terminal without duplicates", as
     scanLine,
     "scan reached terminal within timeout",
   ).toContainText(/完成|部分完成/, { timeout: 60_000 });
+  e2eScanId = (await scanLine.textContent())?.match(/[0-9a-f-]{36}/i)?.[0] ?? "";
+  expect(e2eScanId).toMatch(/^[0-9a-f-]{36}$/i);
 
   // Exactly ONE run for the fresh list (no double submit on this path).
   await page.getByRole("button", { name: "查看候選" }).click();
@@ -61,9 +64,11 @@ test("opens chart and reasons, saves a review", async ({ page }) => {
   await page.getByPlaceholder("貼上 token").fill(state.token);
   await page.getByRole("button", { name: "連線" }).click();
   await page.getByRole("button", { name: "歷史" }).click();
-  // Open the first history row, then the DEMO result inside it (only the
+  // Open the run created above, then the DEMO result inside it (only the
   // selected symbol's series is fetched).
-  await page.locator("table.list tbody tr").first().click();
+  const historyRow = page.locator("table.list tbody tr").filter({ hasText: e2eScanId.slice(0, 8) });
+  await expect(historyRow).toBeVisible();
+  await historyRow.click();
   await page.getByRole("cell", { name: "DEMO" }).click();
   await expect(page.locator("svg[role=img]")).toBeVisible();
   await expect(page.getByText(/入選原因與分項/)).toBeVisible();
@@ -82,7 +87,9 @@ test("reload requires reconnect and the review survives", async ({ page }) => {
 
   // Reach the run through 歷史 (not an in-session submit): the run is bound by id.
   await page.getByRole("button", { name: "歷史" }).click();
-  await page.locator("table.list tbody tr").first().click();
+  const historyRow = page.locator("table.list tbody tr").filter({ hasText: e2eScanId.slice(0, 8) });
+  await expect(historyRow).toBeVisible();
+  await historyRow.click();
   await page.getByRole("cell", { name: "DEMO" }).click();
   const noteBox = page.getByLabel(/備註/);
   await expect(noteBox).toHaveValue("E2E：型態清楚，值得覆核");

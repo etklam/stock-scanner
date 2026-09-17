@@ -47,7 +47,49 @@ export type Review = components["schemas"]["SavedReviewOut"];
 
 export type Page<T> = { items: T[]; next_cursor: string | null };
 
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+const APPLICATION_DEADLINE_MS = 15_000;
+
+function deadline(signal: AbortSignal | undefined, timeoutMs: number) {
+  const controller = new AbortController();
+  const forward = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    forward();
+  } else {
+    signal?.addEventListener("abort", forward, { once: true });
+  }
+  const timer = signal?.aborted
+    ? null
+    : setTimeout(
+        () => controller.abort(new DOMException("Request deadline exceeded", "TimeoutError")),
+        timeoutMs,
+      );
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      if (timer !== null) clearTimeout(timer);
+      signal?.removeEventListener("abort", forward);
+    },
+  };
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason ?? new DOMException("Request aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, ms);
+    const abort = () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      reject(signal?.reason ?? new DOMException("Request aborted", "AbortError"));
+    };
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
 
 export class ApiClient {
   constructor(
@@ -59,7 +101,7 @@ export class ApiClient {
   private async request<T>(
     method: string,
     path: string,
-    init?: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal },
+    init?: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<T> {
     const token = this.getToken();
     if (token === null && path.startsWith("/api/")) {
@@ -70,49 +112,60 @@ export class ApiClient {
     if (token !== null) headers.Authorization = `Bearer ${token}`;
     if (init?.body !== undefined) headers["Content-Type"] = "application/json";
     if (init?.idempotencyKey) headers["Idempotency-Key"] = init.idempotencyKey;
-    const response = await fetch(this.base + path, {
-      method,
-      headers,
-      body: init?.body === undefined ? undefined : JSON.stringify(init.body),
-      signal: init?.signal,
-    });
-    if (response.status === 401) {
-      // Token rotated or wrong: force reconnect; the caller clears caches.
-      this.onUnauthorized();
-      throw new ApiError(401, undefined);
-    }
-    if (!response.ok) {
-      let body: ErrorBody | undefined;
-      try {
-        const parsed = (await response.json()) as { error?: ErrorBody };
-        body = parsed?.error;
-      } catch {
-        // Non-JSON error body: fall through with the status code only.
+    const timed = deadline(init?.signal, init?.timeoutMs ?? APPLICATION_DEADLINE_MS);
+    try {
+      const response = await fetch(this.base + path, {
+        method,
+        headers,
+        body: init?.body === undefined ? undefined : JSON.stringify(init.body),
+        signal: timed.signal,
+      });
+      if (response.status === 401) {
+        // Token rotated or wrong: force reconnect; the caller clears caches.
+        this.onUnauthorized();
+        throw new ApiError(401, undefined);
       }
-      throw new ApiError(response.status, body);
+      if (!response.ok) {
+        let body: ErrorBody | undefined;
+        try {
+          const parsed = (await response.json()) as { error?: ErrorBody };
+          body = parsed?.error;
+        } catch {
+          // Non-JSON error body: fall through with the status code only.
+        }
+        throw new ApiError(response.status, body);
+      }
+      if (response.status === 204) return undefined as T;
+      return (await response.json()) as T;
+    } finally {
+      timed.dispose();
     }
-    if (response.status === 204) return undefined as T;
-    return (await response.json()) as T;
   }
 
   /** POST /scans with a caller-owned idempotency key. Retries on 429 reuse
    * the SAME key and body (bounded backoff, never infinite). */
-  async submitScan(body: ScanBody, idempotencyKey: string): Promise<ScanStatus | ScanAccepted> {
+  async submitScan(body: ScanBody, idempotencyKey: string, signal?: AbortSignal): Promise<ScanStatus | ScanAccepted> {
+    const timed = deadline(signal, APPLICATION_DEADLINE_MS);
     let delay = 500;
-    for (let attempt = 1; ; attempt += 1) {
-      try {
-        return await this.request<ScanStatus | ScanAccepted>("POST", "/api/v1/scans", {
-          body,
-          idempotencyKey,
-        });
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 429 && attempt <= 3) {
-          await sleep(delay);
-          delay *= 2;
-          continue;
+    try {
+      for (let attempt = 1; ; attempt += 1) {
+        try {
+          return await this.request<ScanStatus | ScanAccepted>("POST", "/api/v1/scans", {
+            body,
+            idempotencyKey,
+            signal: timed.signal,
+          });
+        } catch (error) {
+          if (error instanceof ApiError && error.status === 429 && attempt <= 3) {
+            await sleep(delay, timed.signal);
+            delay *= 2;
+            continue;
+          }
+          throw error;
         }
-        throw error;
       }
+    } finally {
+      timed.dispose();
     }
   }
 
@@ -128,19 +181,21 @@ export class ApiClient {
     return this.request<Watchlist[]>("GET", "/api/v1/watchlists", { signal });
   }
 
-  createWatchlist(name: string, symbols: string[]) {
-    return this.request<Watchlist>("POST", "/api/v1/watchlists", { body: { name, symbols } });
+  createWatchlist(name: string, symbols: string[], signal?: AbortSignal) {
+    return this.request<Watchlist>("POST", "/api/v1/watchlists", { body: { name, symbols }, signal });
   }
 
-  renameWatchlist(id: string, name: string, expectedRevision: number) {
+  renameWatchlist(id: string, name: string, expectedRevision: number, signal?: AbortSignal) {
     return this.request<Watchlist>("PATCH", `/api/v1/watchlists/${id}`, {
       body: { name, expected_revision: expectedRevision },
+      signal,
     });
   }
 
-  replaceSymbols(id: string, symbols: string[], expectedRevision: number) {
+  replaceSymbols(id: string, symbols: string[], expectedRevision: number, signal?: AbortSignal) {
     return this.request<Watchlist>("PUT", `/api/v1/watchlists/${id}/symbols`, {
       body: { symbols, expected_revision: expectedRevision },
+      signal,
     });
   }
 
@@ -205,9 +260,11 @@ export class ApiClient {
     scanId: string,
     instrumentId: string,
     body: { label: string; note: string; expected_revision?: number },
+    signal?: AbortSignal,
   ) {
     return this.request<Review>("PUT", `/api/v1/scans/${scanId}/reviews/${instrumentId}`, {
       body,
+      signal,
     });
   }
 }

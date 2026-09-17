@@ -30,7 +30,13 @@ export const REASON_LABELS: Record<string, string> = {
 };
 
 export function reasonLabel(code: string): string {
-  return REASON_LABELS[code] ?? `未知原因（${code}）`;
+  return REASON_LABELS[code] ?? STAGE_LABELS[code] ?? `未知原因（${code}）`;
+}
+
+export function diagnosticLabel(code: string): string {
+  const [base = code, detail] = code.split(":", 2);
+  const label = reasonLabel(base);
+  return detail === undefined ? label : `${label}（${detail}）`;
 }
 
 export function stageLabel(stage: string | null | undefined): string {

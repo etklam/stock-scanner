@@ -2,7 +2,15 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import type { FormEvent } from "react";
 import { ApiClient, ApiError, ScanAccepted, ScanStatus } from "../api/client";
-import { claimRecovery, clearPending, loadPending, savePending } from "../state/pending";
+import {
+  claimRecovery,
+  clearPendingIfCurrent,
+  loadPending,
+  pendingStorageIsPersistent,
+  releaseRecovery,
+  savePending,
+  savePendingIfCurrent,
+} from "../state/pending";
 
 const TERMINAL = new Set(["SUCCEEDED", "PARTIAL", "FAILED"]);
 
@@ -15,16 +23,22 @@ function stateLabel(state: string): string {
   return { QUEUED: "排隊中", RUNNING: "掃描中", SUCCEEDED: "完成", PARTIAL: "部分完成", FAILED: "失敗" }[state] ?? state;
 }
 
+function isDefinitiveRejection(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status >= 400 && cause.status < 500 && ![401, 409, 429].includes(cause.status);
+}
+
 export function ListsScan({ client, onOpenRun }: Props) {
   const queryClient = useQueryClient();
   const session = useQuery({ queryKey: ["session"], queryFn: (c) => client.currentSession(c.signal) });
   const lists = useQuery({ queryKey: ["watchlists"], queryFn: (c) => client.watchlists(c.signal) });
 
   const [watchlistId, setWatchlistId] = useState("");
-  const resolvedWatchlistId = watchlistId || lists.data?.[0]?.id || "";
+  const resolvedWatchlistId =
+    lists.data?.find((list) => list.id === watchlistId)?.id ?? lists.data?.[0]?.id ?? "";
   const [mode, setMode] = useState<"auto" | "cache_only" | "force">("auto");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [intentBusy, setIntentBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const recoveredOnce = useRef(false);
 
@@ -37,27 +51,33 @@ export function ListsScan({ client, onOpenRun }: Props) {
     if (!pending) return;
     if (pending.scanId !== null) {
       setActiveId(pending.scanId); // known outcome: pure GET polling resumes
+      setIntentBusy(true);
       return;
     }
     // Unknown outcome: resubmit the SAME key+body exactly once (server-side
     // idempotency makes this a replay, never a second scan). StrictMode's
     // double-invoke is guarded by claimRecovery.
     if (!claimRecovery(pending.key)) return;
+    setSubmitting(true);
     client
       .submitScan(pending.body, pending.key)
       .then((document) => {
-        savePending({ ...pending, scanId: document.id });
-        setActiveId(document.id);
+        if (!savePendingIfCurrent(pending.key, { ...pending, scanId: document.id })) return;
+        setActiveId(document.id); // the accepted id is now polled by GET only
+        setIntentBusy(true);
+        queryClient.invalidateQueries({ queryKey: ["scans"] });
       })
       .catch((cause: unknown) => {
+        if (isDefinitiveRejection(cause)) {
+          clearPendingIfCurrent(pending.key);
+        }
         setError(cause instanceof ApiError ? `${cause.code}: ${cause.message}` : String(cause));
       })
       .finally(() => {
-        // Released only after the outcome is known; the intent stays saved.
-        clearPending();
-        setActiveId((current) => current);
+        releaseRecovery(pending.key);
+        setSubmitting(false);
       });
-  }, [client]);
+  }, [client, queryClient]);
 
   const status = useQuery({
     queryKey: ["scan", activeId],
@@ -73,30 +93,47 @@ export function ListsScan({ client, onOpenRun }: Props) {
     const document = status.data;
     if (document === undefined || !TERMINAL.has(document.state)) return;
     const pending = loadPending();
-    if (pending?.scanId === document.id) clearPending();
+    if (pending?.scanId === document.id) {
+      clearPendingIfCurrent(pending.key, document.id);
+      setIntentBusy(false);
+    }
   }, [status.data]);
 
   const submit = async (event: FormEvent) => {
     event.preventDefault(); // never an automatic POST: user action only
-    if (!resolvedWatchlistId || submitting) return;
+    if (!resolvedWatchlistId || submitting || intentBusy) return;
     setSubmitting(true);
     setError(null);
-    // A NEW intentional scan uses a NEW idempotency key, saved (non-secret)
-    // before the request so a lost response replays instead of duplicating.
-    const key = crypto.randomUUID();
-    const body = { watchlist_id: resolvedWatchlistId, as_of_session: null, data_mode: mode } as const;
-    savePending({ key, body, scanId: null });
+    // An unresolved intent is retried with its original key/body; only a new
+    // user intent gets a new key.
+    const existing = loadPending();
+    if (existing !== null && existing.scanId !== null) {
+      setActiveId(existing.scanId);
+      setIntentBusy(true);
+      setSubmitting(false);
+      return;
+    }
+    const intent = existing ?? {
+      key: crypto.randomUUID(),
+      body: { watchlist_id: resolvedWatchlistId, as_of_session: null, data_mode: mode } as const,
+      scanId: null,
+    };
+    if (existing === null) savePending(intent);
     try {
-      const document: ScanStatus | ScanAccepted = await client.submitScan(body, key);
-      savePending({ key, body, scanId: document.id });
-      setActiveId(document.id);
-      queryClient.invalidateQueries({ queryKey: ["scans"] });
+      const document: ScanStatus | ScanAccepted = await client.submitScan(intent.body, intent.key);
+      if (savePendingIfCurrent(intent.key, { ...intent, scanId: document.id })) {
+        setActiveId(document.id);
+        setIntentBusy(true);
+        queryClient.invalidateQueries({ queryKey: ["scans"] });
+      }
     } catch (cause) {
-      if (!(cause instanceof ApiError && cause.status === 401)) clearPending();
+      if (isDefinitiveRejection(cause)) {
+        clearPendingIfCurrent(intent.key);
+      }
       setError(
         cause instanceof ApiError
           ? cause.status === 429
-            ? "排隊額已滿（429），稍後再試；意圖已保存，reload 後會恢復。"
+            ? "排隊額已滿（429），稍後再試；原意圖已保存。"
             : `${cause.code}: ${cause.message}`
           : String(cause),
       );
@@ -167,10 +204,15 @@ export function ListsScan({ client, onOpenRun }: Props) {
               <option value="force">force（強制重新下載）</option>
             </select>
           </label>
-          <button className="primary" type="submit" disabled={!watchlistId || submitting}>
+          <button className="primary" type="submit" disabled={!resolvedWatchlistId || submitting || intentBusy}>
             {submitting ? "提交中…" : "開始掃描"}
           </button>
         </form>
+        {!pendingStorageIsPersistent() && (
+          <p className="muted" role="status">
+            瀏覽器未准許暫存未完成掃描意圖；目前頁面仍會繼續，但 reload 未必可以恢復原本操作。
+          </p>
+        )}
         {error !== null && <p className="error-text" role="alert">{error}</p>}
         {document !== undefined && (
           <div aria-live="polite">

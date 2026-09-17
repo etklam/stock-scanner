@@ -18,6 +18,7 @@ function stubFetch(responses: Array<{ status: number; body?: unknown }>) {
 }
 
 afterEach(() => {
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -98,5 +99,56 @@ describe("ApiClient", () => {
     const api = new ApiClient("", () => null, unauthorized);
     await expect(api.watchlists()).rejects.toMatchObject({ status: 401 });
     expect(calls).toHaveLength(0);
+  });
+
+  it("keeps all-results and stage filters semantically distinct", async () => {
+    const calls = stubFetch([
+      { status: 200, body: { items: [], next_cursor: null } },
+      { status: 200, body: { items: [], next_cursor: null } },
+    ]);
+    const { api } = client();
+    await api.resultsPage("run", "all", 50);
+    await api.resultsPage("run", "stage:FORMING", 50);
+    expect(new URL(calls[0]!.url, "http://localhost").search).toContain("limit=50");
+    expect(new URL(calls[0]!.url, "http://localhost").search).not.toContain("candidate=");
+    expect(new URL(calls[1]!.url, "http://localhost").search).toContain("stage=FORMING");
+    expect(new URL(calls[1]!.url, "http://localhost").search).toContain("candidate=true");
+  });
+
+  it("aborts a never-resolving submit at the application deadline", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal(
+      "fetch",
+      vi.fn((_url: string | URL, init: RequestInit = {}) =>
+        new Promise<Response>((_resolve, reject) => {
+          init.signal?.addEventListener(
+            "abort",
+            () => reject(init.signal?.reason ?? new DOMException("aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+      ),
+    );
+    const { api } = client();
+    const body = { watchlist_id: "wl", as_of_session: null, data_mode: "auto" } as const;
+    const pending = api.submitScan(body, "deadline-key-000001");
+    const assertion = expect(pending).rejects.toMatchObject({ name: "TimeoutError" });
+
+    await vi.advanceTimersByTimeAsync(15_000);
+    await assertion;
+  });
+
+  it("cancels a 429 backoff when the caller aborts", async () => {
+    stubFetch([
+      { status: 429, body: { error: { code: "QUEUE_LIMIT_REACHED", message: "x", request_id: "r" } } },
+    ]);
+    const { api } = client();
+    const controller = new AbortController();
+    const body = { watchlist_id: "wl", as_of_session: null, data_mode: "auto" } as const;
+    const pending = api.submitScan(body, "cancel-key-000001", controller.signal);
+    const assertion = expect(pending).rejects.toMatchObject({ name: "AbortError" });
+
+    controller.abort();
+    await assertion;
   });
 });

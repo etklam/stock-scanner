@@ -243,3 +243,24 @@ status/results/冪等重放照常服務（submit 0.08s、status median 0.066s、
 - wheel-smoke venv 改為釘住 gate interpreter：各平台跑 gate 前須確認其
   Python build 的 SQLite 屬已修版本（gate 會自行失敗如實反映）。
 - UI 無手機遠端連線宣稱：僅 loopback 單人本地使用。
+
+## Phase 6A.1 current status (F07/F10/F11)
+
+The current support matrix is maintained in [phase6a1-status.md](phase6a1-status.md).
+This section is intentionally separate from the historical Phase 6A results above.
+
+- Result detail keeps explanation diagnostics visible when the chart series is
+  unavailable. Candidate stage reasons, alternative-window gate failures, data
+  warnings, and unavailable features have separate readable sections; unknown
+  values are not converted to zero.
+- The result filter labels distinguish candidate-only results from all result
+  categories, including `data_error`. A stage filter remains candidate-stage-only,
+  matching its API query semantics.
+- Release frontend acceptance includes `npm run check:contract`, production
+  build, and `npm run test:e2e`. The browser step is required; missing Chrome or
+  Playwright is a failure, not a successful skip. The contract comparison uses a
+  Node script so temporary-file cleanup and comparison work on Windows/macOS/Linux.
+- Local macOS verification on 2026-09-17 passed `uv run python scripts/check.py`
+  (Python 3.12.14 / SQLite 3.53.4, 280 offline Python tests, 39 frontend unit
+  tests, 4/4 browser E2E, wheel smoke). This is evidence for this host only;
+  Windows/Linux still require their own manual gate and runtime record.

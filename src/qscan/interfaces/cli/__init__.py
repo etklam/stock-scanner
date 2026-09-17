@@ -3,7 +3,7 @@
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import date
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -399,6 +399,13 @@ def serve(
     host: Annotated[str, typer.Option()] = "127.0.0.1",
     port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
     queue_limit: Annotated[int, typer.Option(min=1, max=1000)] = 20,
+    dev_clock_at: Annotated[
+        str | None,
+        typer.Option(
+            "--dev-clock-at",
+            help="Deterministic UTC clock for local fixture acceptance only (ISO-8601).",
+        ),
+    ] = None,
     dev_openapi: Annotated[bool, typer.Option("--dev-openapi")] = False,
     dev_origin: Annotated[
         list[str] | None,
@@ -418,6 +425,15 @@ def serve(
         raise typer.Exit(2)
     from qscan.adapters.providers import FixtureProvider, YahooProvider
 
+    clock = None
+    if dev_clock_at is not None:
+        from qscan.adapters.calendar import FixedClock
+
+        instant = datetime.fromisoformat(dev_clock_at.replace("Z", "+00:00"))
+        if instant.tzinfo is None:
+            raise ValueError("--dev-clock-at must include a timezone offset")
+        clock = FixedClock(instant.astimezone(UTC))
+
     directory, source = ctx.obj
     provider = FixtureProvider({}) if source == Source.FIXTURE else YahooProvider()
     code = run_serve(
@@ -427,6 +443,7 @@ def serve(
         host=host,
         port=port,
         queue_limit=queue_limit,
+        clock=clock,
         dev_openapi=dev_openapi,
         dev_origins=tuple(dev_origin or ()),
     )
