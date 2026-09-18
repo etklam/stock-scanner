@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import type { Page } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
@@ -17,20 +18,37 @@ let e2eScanId = "";
 
 test.describe.configure({ mode: "serial" });
 
-test("connects with the local token", async ({ page }) => {
+async function connectWithBearerFallback(page: Page) {
+  await page.route("**/api/v1/auth/session", (route) => route.fulfill({ status: 503, body: "session unavailable" }));
   await page.goto("/ui/");
   await expect(page.getByRole("heading", { name: "連線本地 API" })).toBeVisible();
+  await page.getByText("進階：使用 Bearer token").click();
   await page.getByPlaceholder("貼上 token").fill(state.token);
-  await page.getByRole("button", { name: "連線" }).click();
+  await page.getByRole("button", { name: "Bearer 連線" }).click();
+  await expect(page.getByRole("heading", { name: "今日報告" })).toBeVisible();
+}
+
+test("opens Today through the automatic local browser session", async ({ page }) => {
+  await page.goto("/ui/");
+  await expect(page.getByRole("heading", { name: "今日報告" })).toBeVisible();
+  await expect(page.getByPlaceholder("貼上 token")).toHaveCount(0);
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "今日報告" })).toBeVisible();
+  await expect(page.getByPlaceholder("貼上 token")).toHaveCount(0);
+});
+
+test("keeps the advanced Bearer fallback", async ({ page }) => {
+  await connectWithBearerFallback(page);
+  await page.getByRole("button", { name: "進階" }).click();
   await expect(page.getByRole("heading", { name: "名單" })).toBeVisible();
   // The close-only limitation banner is part of every session.
   await expect(page.getByRole("note")).toContainText("close-only 初篩");
 });
 
 test("creates a list, submits one scan, reaches terminal without duplicates", async ({ page }) => {
-  await page.goto("/ui/");
-  await page.getByPlaceholder("貼上 token").fill(state.token);
-  await page.getByRole("button", { name: "連線" }).click();
+  await connectWithBearerFallback(page);
+  await page.getByRole("button", { name: "進階" }).click();
 
   // Create an explicitly-named list (paste symbols).
   await page.getByPlaceholder("us-growth").fill(listName);
@@ -60,9 +78,7 @@ test("creates a list, submits one scan, reaches terminal without duplicates", as
 });
 
 test("opens chart and reasons, saves a review", async ({ page }) => {
-  await page.goto("/ui/");
-  await page.getByPlaceholder("貼上 token").fill(state.token);
-  await page.getByRole("button", { name: "連線" }).click();
+  await connectWithBearerFallback(page);
   await page.getByRole("button", { name: "歷史" }).click();
   // Open the run created above, then the DEMO result inside it (only the
   // selected symbol's series is fetched).
@@ -81,9 +97,7 @@ test("opens chart and reasons, saves a review", async ({ page }) => {
 });
 
 test("reload requires reconnect and the review survives", async ({ page }) => {
-  await page.goto("/ui/");
-  await page.getByPlaceholder("貼上 token").fill(state.token);
-  await page.getByRole("button", { name: "連線" }).click();
+  await connectWithBearerFallback(page);
 
   // Reach the run through 歷史 (not an in-session submit): the run is bound by id.
   await page.getByRole("button", { name: "歷史" }).click();

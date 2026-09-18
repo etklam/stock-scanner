@@ -1,20 +1,39 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { useAuth } from "./auth";
 import { Connect } from "./screens/Connect";
 import { History } from "./screens/History";
 import { ListsScan } from "./screens/ListsScan";
 import { RunDetail } from "./screens/Detail";
+import { Settings } from "./screens/Settings";
+import { Today } from "./screens/Today";
 
-type Tab = "scan" | "history" | "detail";
+type Tab = "today" | "history" | "settings" | "advanced" | "detail";
+
+export function reportPath(search: string): string | null {
+  const report = new URLSearchParams(search).get("report");
+  return report
+    && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(report)
+    ? `/api/v1/reports/${report}`
+    : null;
+}
 
 export function App({ queryClient }: { queryClient: QueryClient }) {
   const auth = useAuth();
-  const [tab, setTab] = useState<Tab>("scan");
+  const [tab, setTab] = useState<Tab>("today");
   const [selectedRun, setSelectedRun] = useState<string | null>(null);
 
+  useEffect(() => {
+    if (!auth.connected || !auth.client) return;
+    const path = reportPath(window.location.search);
+    if (path) window.location.assign(path);
+  }, [auth.connected, auth.client]);
+
+  if (auth.checking) {
+    return <p className="muted" role="status">正在連線本地 qscan…</p>;
+  }
   if (!auth.connected || !auth.client) {
-    return <Connect onConnect={auth.connect} />;
+    return <Connect onConnect={auth.connect} onRetry={auth.retrySession} />;
   }
   const client = auth.client;
 
@@ -36,14 +55,15 @@ export function App({ queryClient }: { queryClient: QueryClient }) {
         <button onClick={() => { auth.disconnect(); queryClient.clear(); }}>斷線</button>
       </div>
       <nav className="tabs" aria-label="主畫面">
-        <button aria-current={tab === "scan"} onClick={() => setTab("scan")}>名單與掃描</button>
+        <button aria-current={tab === "today"} onClick={() => setTab("today")}>今日</button>
         <button aria-current={tab === "history"} onClick={() => setTab("history")}>歷史</button>
-        <button aria-current={tab === "detail"} disabled={selectedRun === null} onClick={() => setTab("detail")}>
-          候選詳情
-        </button>
+        <button aria-current={tab === "settings"} onClick={() => setTab("settings")}>設定</button>
+        <button aria-current={tab === "advanced"} onClick={() => setTab("advanced")}>進階</button>
       </nav>
-      {tab === "scan" && <ListsScan client={client} onOpenRun={openRun} />}
+      {tab === "today" && <Today client={client} />}
       {tab === "history" && <History client={client} onOpenRun={openRun} selectedRun={selectedRun} />}
+      {tab === "settings" && <Settings client={client} />}
+      {tab === "advanced" && <ListsScan client={client} onOpenRun={openRun} />}
       {tab === "detail" && selectedRun !== null && (
         <RunDetail client={client} runId={selectedRun} />
       )}

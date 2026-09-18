@@ -4,6 +4,8 @@ All tests are offline; the fixture provider records every fetch call so tests ca
 assert that GET routes never trigger provider I/O.
 """
 
+import hashlib
+import hmac
 import json
 import threading
 import time
@@ -648,6 +650,113 @@ def test_token_rotation_keeps_principal_and_invalidates_old(tmp_path):
             )
             assert wl.status_code == 201
             assert len(client.get("/api/v1/watchlists", headers=fresh).json()) == 1
+    finally:
+        harness.close()
+
+
+def test_existing_token_file_gains_stable_instance_and_browser_secrets(tmp_path):
+    token_path = tmp_path / "api-token.json"
+    token_path.write_text(
+        json.dumps(
+            {
+                "token": "legacy-token",
+                "principal": "local",
+                "cursor_secret": "stable-cursor",
+                "created_at": "2026-09-01T00:00:00+00:00",
+            }
+        )
+    )
+
+    token, created = ensure_token(token_path)
+    upgraded = json.loads(token_path.read_text())
+    assert (token, created) == ("legacy-token", False)
+    stable_fields = ("instance_id", "instance_secret", "browser_session_secret")
+    assert all(upgraded[name] for name in stable_fields)
+
+    rotate_token(token_path)
+    rotated = json.loads(token_path.read_text())
+    assert rotated["token"] != "legacy-token"
+    assert {
+        name: rotated[name] for name in ("instance_id", "instance_secret", "browser_session_secret")
+    } == {
+        name: upgraded[name]
+        for name in ("instance_id", "instance_secret", "browser_session_secret")
+    }
+
+
+def test_browser_session_is_automatic_and_cookie_mutations_require_origin_and_csrf(tmp_path):
+    harness = Harness(tmp_path, allowed_origins=("http://testserver",))
+    try:
+        with TestClient(harness.client.app) as browser:
+            for headers in (
+                {},
+                {"Origin": "null", "Sec-Fetch-Site": "same-origin"},
+                {"Origin": "http://evil.example", "Sec-Fetch-Site": "same-origin"},
+                {"Origin": "http://testserver", "Sec-Fetch-Site": "cross-site"},
+                {"Origin": "http://testserver"},
+            ):
+                rejected = browser.post("/api/v1/auth/session", headers=headers)
+                assert rejected.status_code == 403
+
+            direct = browser.post(
+                "/api/v1/auth/session",
+                headers={"Origin": "http://testserver", "Sec-Fetch-Site": "none"},
+            )
+            assert direct.status_code == 200
+            session = browser.post(
+                "/api/v1/auth/session",
+                headers={"Origin": "http://testserver", "Sec-Fetch-Site": "same-origin"},
+            )
+            assert session.status_code == 200
+            csrf = session.json()["csrf_token"]
+            assert csrf
+            cookie = session.headers["set-cookie"]
+            assert "HttpOnly" in cookie and "SameSite=strict" in cookie
+            assert session.headers["x-frame-options"] == "DENY"
+            assert "frame-ancestors 'none'" in session.headers["content-security-policy"]
+            assert browser.get("/api/v1/watchlists").status_code == 200
+
+            body = {"name": "browser", "symbols": ["GOOD"]}
+            for headers in (
+                {},
+                {"Origin": "null", "X-CSRF-Token": csrf},
+                {"Origin": "http://evil.example", "X-CSRF-Token": csrf},
+                {"Origin": "http://testserver"},
+                {"Origin": "http://testserver", "X-CSRF-Token": csrf + "x"},
+            ):
+                rejected = browser.post("/api/v1/watchlists", headers=headers, json=body)
+                assert rejected.status_code == 403
+
+            created = browser.post(
+                "/api/v1/watchlists",
+                headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+                json=body,
+            )
+            assert created.status_code == 201
+    finally:
+        harness.close()
+
+
+def test_instance_challenge_binds_nonce_instance_and_data_directory(tmp_path):
+    harness = Harness(tmp_path)
+    try:
+        nonce = "caller-nonce-0123456789abcdef"
+        response = harness.client.get("/api/v1/instance/challenge", params={"nonce": nonce})
+        assert response.status_code == 200
+        challenge = response.json()
+        credentials = json.loads((tmp_path / "api-token-local.json").read_text())
+        data_dir_id = hashlib.sha256(str(harness.data_dir.resolve()).encode()).hexdigest()
+        message = f"{credentials['instance_id']}\n{data_dir_id}\n{nonce}".encode()
+        proof = hmac.new(
+            credentials["instance_secret"].encode(), message, hashlib.sha256
+        ).hexdigest()
+        assert challenge == {
+            "instance_id": credentials["instance_id"],
+            "data_dir_id": data_dir_id,
+            "nonce": nonce,
+            "proof": proof,
+            "provider": "fixture",
+        }
     finally:
         harness.close()
 

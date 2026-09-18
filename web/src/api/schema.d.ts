@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/api/v1/automation/enable": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Automation Enable */
+        post: operations["automation_enable_api_v1_automation_enable_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Automation Pause */
+        post: operations["automation_pause_api_v1_automation_pause_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation/run-now": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Automation Run Now */
+        post: operations["automation_run_now_api_v1_automation_run_now_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/automation/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Automation Status */
+        get: operations["automation_status_api_v1_automation_status_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/reports/latest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Latest Report */
+        get: operations["latest_report_api_v1_reports_latest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/rulesets": {
         parameters: {
             query?: never;
@@ -287,6 +372,54 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AutomationJobOut */
+        AutomationJobOut: {
+            /** Attempt */
+            attempt: number;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Run Id
+             * Format: uuid
+             */
+            run_id: string;
+            /**
+             * Session
+             * Format: date
+             */
+            session: string;
+        };
+        /** AutomationRunOut */
+        AutomationRunOut: {
+            counts?: components["schemas"]["CountsOut"] | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            progress?: components["schemas"]["ProgressOut"] | null;
+            /** State */
+            state: string;
+        };
+        /** AutomationStatusOut */
+        AutomationStatusOut: {
+            /** Enabled */
+            enabled: boolean;
+            job?: components["schemas"]["AutomationJobOut"] | null;
+            /** Latest Completed Session */
+            latest_completed_session?: string | null;
+            /** Next Due Session */
+            next_due_session?: string | null;
+            /** Next Due Time */
+            next_due_time?: string | null;
+            notification?: components["schemas"]["NotificationStatusOut"] | null;
+            report?: components["schemas"]["ReportStatusOut"] | null;
+            run?: components["schemas"]["AutomationRunOut"] | null;
+            universe?: components["schemas"]["UniverseStatusOut"] | null;
+        };
         /** Change */
         Change: {
             /** Codes */
@@ -424,6 +557,18 @@ export interface components {
             instrument_type: string;
         };
         JsonValue: unknown;
+        /** NotificationStatusOut */
+        NotificationStatusOut: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /** Detail */
+            detail?: string | null;
+            /** Outcome */
+            outcome?: ("DELIVERED" | "DENIED" | "UNAVAILABLE" | "FAILED") | null;
+        };
         /** PatchWatchlist */
         PatchWatchlist: {
             /** Expected Revision */
@@ -481,6 +626,25 @@ export interface components {
             expected_revision: number;
             /** Symbols */
             symbols: string[];
+        };
+        /** ReportStatusOut */
+        ReportStatusOut: {
+            /**
+             * Attempts
+             * @default 0
+             */
+            attempts: number;
+            /** Error */
+            error?: string | null;
+            /** Run Id */
+            run_id?: string | null;
+            /**
+             * State
+             * @enum {string}
+             */
+            state: "PENDING" | "PUBLISHED" | "FAILED" | "MISSING";
+            /** Url */
+            url?: string | null;
         };
         /**
          * ResultOut
@@ -777,6 +941,32 @@ export interface components {
             selected_window?: components["schemas"]["WindowAnalysis"] | null;
             stage?: components["schemas"]["Stage"] | null;
         };
+        /** UniverseStatusOut */
+        UniverseStatusOut: {
+            /**
+             * Freshness
+             * @enum {string}
+             */
+            freshness: "CURRENT" | "STALE";
+            /** Member Count */
+            member_count: number;
+            /**
+             * Retrieved At
+             * Format: date-time
+             */
+            retrieved_at: string;
+            /**
+             * Snapshot Id
+             * Format: uuid
+             */
+            snapshot_id: string;
+            /** Source License */
+            source_license: string;
+            /** Source Revision */
+            source_revision: string;
+            /** Source Url */
+            source_url: string;
+        };
         /** WatchlistLinks */
         WatchlistLinks: {
             /** Self */
@@ -847,6 +1037,106 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    automation_enable_api_v1_automation_enable_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationStatusOut"];
+                };
+            };
+        };
+    };
+    automation_pause_api_v1_automation_pause_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationStatusOut"];
+                };
+            };
+        };
+    };
+    automation_run_now_api_v1_automation_run_now_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationStatusOut"];
+                };
+            };
+        };
+    };
+    automation_status_api_v1_automation_status_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AutomationStatusOut"];
+                };
+            };
+        };
+    };
+    latest_report_api_v1_reports_latest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReportStatusOut"];
+                };
+            };
+        };
+    };
     rulesets_api_v1_rulesets_get: {
         parameters: {
             query?: never;

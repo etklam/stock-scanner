@@ -354,7 +354,7 @@ def test_ui_missing_assets_show_build_hint(tmp_path):
 
 
 def test_old_schema_upgrade_adds_reviews_table(tmp_path):
-    """Migration 0004 is additive: a 0003-era directory upgrades through init."""
+    """A 0003-era directory upgrades through every additive migration to current head."""
     directory = tmp_path / "資料 legacy"
     app = bootstrap(
         FixtureProvider({}),
@@ -374,7 +374,10 @@ def test_old_schema_upgrade_adds_reviews_table(tmp_path):
     try:
         migrate(engine)
         with engine.connect() as connection:
-            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0004"
+            assert connection.scalar(text("SELECT version_num FROM alembic_version")) == "0007"
             connection.exec_driver_sql("SELECT label, note, revision FROM scan_reviews")
+            connection.exec_driver_sql("SELECT id, document FROM universe_snapshots")
+            connection.exec_driver_sql("SELECT run_id, next_index, document FROM scan_executions")
+            connection.exec_driver_sql("SELECT owner_id, enabled FROM automation_settings")
     finally:
         engine.dispose()

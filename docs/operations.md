@@ -321,15 +321,28 @@ session，可用 `--force` 重跑。排程不執行 `uv sync`／依賴升級。
 
 ### 本地 Web 介面
 
-- `qscan serve` 之後，瀏覽器開 `http://127.0.0.1:<port>/ui/`。編譯後靜態
+- 一般操作用 `qscan start`：它會初始化／升級資料目錄、啟動 loopback server，
+  等待 instance verification 成功後自動開啟 `http://127.0.0.1:<port>/ui/`。
+  `qscan serve` 保留畀需要分開控制 server／browser 的進階操作。兩者都拒絕
+  non-loopback host。
+- `qscan start` 只會重用通過 challenge 的既有 instance。challenge 以隨機 nonce、
+  data-directory identity、持久 instance ID 及 HMAC proof 綁定；另一個服務、另一個
+  qscan data directory 或舊 response 都唔會只因為 port 相同而被接受。憑證保存在
+  `api-token.json`（0600），輸出及 UI URL 都唔包含 secret。
+- 編譯後靜態
   assets 由 wheel 附帶（`qscan/interfaces/web/dist`）；**使用者安裝 wheel 後
   完全唔需要 Node/npm**，serve 亦唔會喺使用者機器行 npm。
 - source checkout 缺 build assets 時，`/ui/` 回 404 並列出確實命令
   （`cd web && npm ci && npm run build`）。build 有明確、可重跑流程：
   `npm run build` 直接輸出到 package 內，再 `uv build` 就會打包進 wheel。
-- UI token 只喺記憶體：唔寫 localStorage/sessionStorage/URL；401／token
-  輪換會要求重新連線並清空敏感 query cache（非機密的 pending key/body 保留，
-  重新認證後恢復）。業務 API 全部要 bearer token；未連線唔會偷發私人請求。
+- UI 同 origin 載入時自動呼叫 session bootstrap，取得 15 分鐘簽名 HttpOnly、
+  SameSite=Strict cookie（path `/api`）及只存在記憶體的 CSRF token。Cookie-authenticated
+  GET 可直接使用；POST/PUT/PATCH/DELETE 必須同時有精確 allowlisted Origin 及正確
+  CSRF header。session bootstrap 本身亦要求同 origin／direct navigation fetch
+  metadata。呢啲控制防跨站請求，但唔防可以讀取 qscan data directory 的本機 process。
+- 進階 Bearer token 路徑保持相容：原生 client 可無 Origin；如有 Origin 仍要符合
+  allowlist。UI 的進階 Bearer token 只喺記憶體，唔寫 localStorage/sessionStorage/URL；
+  401 會清理認證狀態及敏感 query cache。
 - 開發模式：`npm run dev`（Vite :5173 proxy 到 127.0.0.1:8000）＋
   `qscan serve --dev-origin http://localhost:5173`。proxy **唔會剝除 Origin**；
   放行靠明確 dev 設定。正式使用係同 origin，外部/null Origin 繼續 403。
@@ -376,5 +389,61 @@ node e2e/visual.mjs         # 1280px／390px 截圖與佈局斷言（需 serve �
 `scripts/check.py --fast` 包含 frontend typecheck／lint／tests（無 Node 時
 明確 SKIP，唔會假通過）；完整 gate 另含 production build＋`uv build`＋
 wheel smoke（wheel smoke 會驗證 installed wheel 的 `/ui/` 匿名 shell、
-`/api` 404 JSON、業務 API 仍然要 token）。瀏覽器 E2E 禁第三方網絡
+`/api` 404 JSON、業務 API 仍然需要有效 browser session 或 Bearer credential）。
+瀏覽器 E2E 禁第三方網絡
 （DNS poisoned 至 NOTFOUND，僅 loopback），只用合成 token 與 fixture 資料。
+
+## Zero-friction managed daily scan
+
+### 已實作的 managed universe 內部能力
+
+- migration 0005 新增 immutable `universe_snapshots`、有順序的 snapshot members，
+  以及一個 mutable last-known-good pointer；發布 snapshot、更新固定 managed
+  watchlist 及切換 LKG 在同一交易內完成。手動 watchlist 不受影響。
+- 預設 adapter 透過 MediaWiki API 讀取英文 Wikipedia
+  [List of S&P 500 companies](https://en.wikipedia.org/wiki/List_of_S%26P_500_companies)。
+  Snapshot 保存來源 URL、[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)、Wikipedia
+  revision、source observation time、retrieval time、content hash 及實際 member count。
+  呢個係公開二手資料，**唔係 S&P／交易所官方 feed，亦唔係認證 constituents
+  service**；`effective_date` 目前為空，唔可當成 point-in-time 歷史成分資料。
+  轉載／再發布時仍須自行履行來源署名、share-alike 及其他適用使用限制。
+- 只有完整 table、有效且不重複的 symbols、以及 450–550 個成員先會接受；唔硬寫
+  「必須 500」。Share lines 保持獨立，provider symbol mapping 另存。失敗或無網絡
+  會保留 LKG；LKG 在擷取後七個曆日內可用（等於七日仍接受），超過七日或從未有
+  valid snapshot 會回 `STALE_DATA`。
+- 相同內容重新擷取會建立帶新 retrieval time 的 immutable snapshot，延長 LKG 時效；
+  managed watchlist 內容未變時 revision 不增加。
+
+`qscan start` 會喺 coordinator 接受新完成交易日時 refresh universe；無有效 LKG 時
+狀態 API／Today 畫面會顯示錯誤，唔會建立成功空 run。Universe refresh 仍無獨立公開
+endpoint，避免普通流程出現第二套 identity。
+
+### Daily coordinator、報告與 notifier
+
+`DesktopNotifier` 提供單次、5 秒預設 timeout 的 best-effort native adapter：macOS 用
+`osascript`、Windows 用 PowerShell toast、Linux 用 `notify-send`，只接受無 credentials
+的 loopback report URL。結果明確分為 delivery attempt acknowledged、permission denied、
+command/platform unavailable 及 failed；成功只代表 OS command 接受嘗試，唔係使用者
+已看見通知。macOS 目前可顯示通知但無 report action。
+
+`qscan start` 實際啟動 coordinator（browser 關閉亦會運行）：接受 newest completed
+session、normal attempt 去重、按 50 隻保存 run-scoped checkpoints、重啟續跑、terminal
+後由 immutable snapshot 產生一份 dated HTML report，再更新 durable latest pointer。
+Report failure 及通知最多三次嘗試都唔會重新掃描。`scripts/daily_scan.py` 保留作手動
+watchlist compatibility wrapper。
+
+登入自動啟動係明確 opt-in，唔會由 `qscan start` 偷偷安裝：
+
+```sh
+qscan autostart install
+qscan autostart status
+```
+
+macOS 寫入 user LaunchAgent、Windows 建立 user ONLOGON task、Linux 寫入並 enable
+systemd user unit；command 使用 absolute executable/data-dir 並以 `start --no-browser`
+啟動。電腦關機或睡眠時唔會執行；恢復後只 catch up 最新完成而未處理 session。
+
+仍未完成／未驗證：macOS `osascript` 顯示命令已於本輪實機回傳 exit 0，但無可點擊
+report action；Windows／Linux action 只做 injected-runner 測試；remote/phone delivery
+未配置。Provider 最終 bar 延遲只依 coordinator 固定 tick 重試，無宣稱 exponential
+backoff 或實測發布 SLA。

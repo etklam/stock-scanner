@@ -430,6 +430,7 @@ def test_incompatible_queued_run_fails_without_executing(tmp_path):
         )
         app.repository.create_run(old_engine)
         other_provider = app.scans.prepare(watchlist.id, as_of=date(2026, 9, 4))
+        assert other_provider.provider == "fixture"
         other_provider = other_provider.model_copy(update={"provider": "someone-else"})
         app.repository.create_run(other_provider)
         executor.start()

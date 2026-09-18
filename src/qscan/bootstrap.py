@@ -15,6 +15,7 @@ from qscan.adapters.calendar import NYSECalendar, SystemClock
 from qscan.adapters.persistence.migrations import HEAD
 from qscan.adapters.persistence.repository import SQLiteRepository, migrate, open_database
 from qscan.adapters.snapshots import SnapshotStore
+from qscan.adapters.universe import WikipediaSP500Source
 from qscan.application.contracts import (
     ApplicationContext,
     ApplicationError,
@@ -22,6 +23,7 @@ from qscan.application.contracts import (
     Clock,
     Provider,
     ServiceLock,
+    UniverseSource,
 )
 from qscan.application.reporting import ComparisonService, ReportService
 from qscan.application.review import ReviewService
@@ -31,6 +33,7 @@ from qscan.application.services import (
     ScanService,
     WatchlistService,
 )
+from qscan.application.universe import UniverseService
 from qscan.domain.models import ErrorCode
 
 
@@ -47,6 +50,7 @@ class Application:
     reports: ReportService
     comparisons: ComparisonService
     reviews: ReviewService
+    universe: UniverseService
     provider: Provider
     calendar: Calendar
     clock: Clock
@@ -78,6 +82,7 @@ class Application:
             reports=ReportService(repository, self.snapshots),
             comparisons=ComparisonService(repository, self.snapshots),
             reviews=ReviewService(repository),
+            universe=self.universe,
             provider=self.provider,
             calendar=self.calendar,
             clock=self.clock,
@@ -96,6 +101,7 @@ def bootstrap(
     initialize: bool = True,
     readonly: bool = False,
     service_lock: ServiceLock | None = None,
+    universe_source: UniverseSource | None = None,
 ) -> Application:
     """service_lock replaces the per-operation executor FileLock for services.
 
@@ -139,6 +145,7 @@ def bootstrap(
     repository = SQLiteRepository(engine, context or ApplicationContext(), clock, provider.name)
     snapshots = SnapshotStore(directory / "snapshots", create=initialize)
     market = MarketDataService(repository, provider, clock, lock, review_interval)
+    universe = UniverseService(repository, universe_source or WikipediaSP500Source(), clock, lock)
     return Application(
         directory,
         engine,
@@ -151,6 +158,7 @@ def bootstrap(
         ReportService(repository, snapshots),
         ComparisonService(repository, snapshots),
         ReviewService(repository),
+        universe,
         provider,
         calendar,
         clock,

@@ -36,3 +36,20 @@ uv run python scripts/check.py --fast   # 快版：唔 build、唔裝 wheel
 - JSON stdout 只有一份 JSON；診斷行 stderr；token 唔好出現喺任何輸出或 log。
 - Regression tests 要能令舊行為失敗；唔好用 blanket skip 或放寬 assertion 換綠燈。
 - Backup/還原語義見 docs/adr/0006-backup-format.md；唔好簡化到只 copy 主 DB 檔。
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked as local markdown under `.scratch/<feature-slug>/`. See
+`docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the default triage roles: `needs-triage`, `needs-info`, `ready-for-agent`,
+`ready-for-human`, and `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. Read the root `CONTEXT.md` when present and
+relevant decisions under `docs/adr/`. See `docs/agents/domain.md`.

@@ -50,6 +50,16 @@ def test_migration_roundtrip_owner_and_reopen(setup, calendar):
         "prices_by_provider",
         "cache_by_provider",
         "scan_reviews",  # migration 0004: human review labels (Phase 6A)
+        "universe_snapshots",
+        "universe_snapshot_members",
+        "managed_universes",
+        "scan_executions",
+        "scan_input_checkpoints",
+        "automation_settings",
+        "daily_jobs",
+        "report_publications",
+        "latest_reports",
+        "notification_deliveries",
     }
     with app.engine.connect() as connection:
         assert connection.scalar(text("PRAGMA foreign_keys")) == 1

@@ -74,6 +74,7 @@ input, select, textarea, button {
   padding: 6px 8px;
 }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; cursor: pointer; }
+.button-link { display: inline-block; padding: 8px 12px; border-radius: 6px; background: var(--accent); color: #fff !important; text-decoration: none; }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 table.list { width: 100%; border-collapse: collapse; }
 table.list th, table.list td {
@@ -105,6 +106,17 @@ tbody tr { cursor: pointer; }
 .legend .swatch { display: inline-block; width: 14px; height: 3px; vertical-align: middle; margin-right: 4px; }
 .progressbar { height: 8px; border-radius: 4px; background: var(--chip); overflow: hidden; }
 .progressbar > div { height: 100%; background: var(--accent); }
+.today > h2 { margin-top: 0; }
+.today-status, .report-ready { margin: 12px 0 18px; }
+.today-status h3, .report-ready h3, .today-meta h3 { margin: 0 0 6px; font-size: 14px; }
+.today-meta { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 18px; border-top: 1px solid var(--line); padding-top: 12px; }
+.today-meta section { min-width: 0; }
+.today-meta dl { margin: 0; }
+.today-meta dl div { display: grid; grid-template-columns: 78px minmax(0, 1fr); gap: 8px; }
+.today-meta dt { color: var(--muted); }
+.today-meta dd { margin: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.today a { color: var(--accent); text-underline-offset: 2px; }
+@media (max-width: 720px) { .today-meta { grid-template-columns: 1fr; gap: 10px; } }
 .review-buttons { display: flex; gap: 6px; flex-wrap: wrap; }
 .review-buttons button[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }
 textarea { width: 100%; min-height: 64px; resize: vertical; }

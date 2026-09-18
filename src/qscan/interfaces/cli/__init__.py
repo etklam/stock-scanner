@@ -1,12 +1,14 @@
 """Synchronous CLI transports over shared application services."""
 
 import json
+import shutil
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Annotated, Any, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Literal
 from uuid import UUID
 
 import typer
@@ -20,6 +22,9 @@ from qscan.adapters.provider_release import yahoo_release
 from qscan.application.contracts import ApplicationError, Run
 from qscan.bootstrap import Application
 from qscan.domain.models import DataMode, ErrorCode, RunState
+
+if TYPE_CHECKING:
+    from qscan.adapters.autostart import AutostartManager
 
 
 class Output(StrEnum):
@@ -91,10 +96,12 @@ watchlists = typer.Typer(no_args_is_help=True)
 scans = typer.Typer(no_args_is_help=True)
 data = typer.Typer(no_args_is_help=True)
 backup = typer.Typer(no_args_is_help=True)
+autostart_commands = typer.Typer(no_args_is_help=True)
 app.add_typer(watchlists, name="watchlist")
 app.add_typer(scans, name="scans")
 app.add_typer(data, name="data")
 app.add_typer(backup, name="backup")
+app.add_typer(autostart_commands, name="autostart")
 
 
 class Source(StrEnum):
@@ -415,12 +422,17 @@ def serve(
             "never inferred from requests. Repeatable.",
         ),
     ] = None,
+    automation: Annotated[
+        bool,
+        typer.Option("--automation", help="Explicitly enable the managed daily coordinator."),
+    ] = False,
 ) -> None:
     """Run the loopback HTTP API with one serial durable scan executor."""
     from qscan.bootstrap import resolve_data_dir
     from qscan.interfaces.api.app import run_serve
+    from qscan.runtime import is_loopback
 
-    if not host.startswith("127.") and host != "localhost":
+    if not is_loopback(host):
         emit({"error": {"code": "FORBIDDEN", "message": "serve is restricted to loopback"}})
         raise typer.Exit(2)
     from qscan.adapters.providers import FixtureProvider, YahooProvider
@@ -446,8 +458,135 @@ def serve(
         clock=clock,
         dev_openapi=dev_openapi,
         dev_origins=tuple(dev_origin or ()),
+        automation=automation,
     )
     raise typer.Exit(code)
+
+
+@app.command()
+def start(
+    ctx: typer.Context,
+    host: Annotated[str, typer.Option()] = "127.0.0.1",
+    port: Annotated[int, typer.Option(min=1, max=65535)] = 8000,
+    queue_limit: Annotated[int, typer.Option(min=1, max=1000)] = 20,
+    browser: Annotated[
+        bool,
+        typer.Option("--browser/--no-browser", help="Open the report-first local UI."),
+    ] = True,
+    preserve_automation: Annotated[
+        bool,
+        typer.Option(
+            "--preserve-automation",
+            hidden=True,
+            help="Keep the persisted automation state (used by OS autostart).",
+        ),
+    ] = False,
+) -> None:
+    """Initialize if needed, reuse the verified instance, and open the local UI."""
+    from qscan.adapters.providers import FixtureProvider, YahooProvider
+    from qscan.bootstrap import resolve_data_dir
+    from qscan.interfaces.api.app import run_serve
+    from qscan.interfaces.api.localauth import ensure_token
+    from qscan.runtime import (
+        existing_instance,
+        is_loopback,
+        open_browser,
+        open_browser_when_ready,
+    )
+
+    if not is_loopback(host):
+        emit({"error": {"code": "FORBIDDEN", "message": "start is restricted to loopback"}})
+        raise typer.Exit(2)
+
+    directory, source = ctx.obj
+    directory = resolve_data_dir(directory)
+    token_path = directory / "api-token.json"
+    origin_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    origin = f"http://{origin_host}:{port}"
+    ui_url = f"{origin}/ui/"
+    if token_path.is_file() and existing_instance(
+        origin,
+        token_path,
+        directory,
+        expected_provider=source.value,
+    ):
+        import urllib.request
+
+        credentials = json.loads(token_path.read_text(encoding="utf-8"))
+        if not preserve_automation:
+            request = urllib.request.Request(
+                origin + "/api/v1/automation/enable",
+                method="POST",
+                headers={"Authorization": f"Bearer {credentials['token']}"},
+            )
+            try:
+                with urllib.request.urlopen(  # noqa: S310 - verified loopback instance
+                    request, timeout=5
+                ) as response:
+                    if response.status != 200:
+                        raise OSError("automation enable rejected")
+            except OSError:
+                emit(
+                    {
+                        "error": {
+                            "code": "INSTANCE_UNAVAILABLE",
+                            "message": "Verified qscan instance disappeared; retry start",
+                        }
+                    }
+                )
+                raise typer.Exit(4) from None
+        if browser:
+            open_browser(ui_url)
+        emit({"reused": True, "url": ui_url})
+        return
+
+    with application(ctx, initialize=True) as instance:
+        ensure_token(instance.data_dir / "api-token.json")
+
+    provider = FixtureProvider({}) if source == Source.FIXTURE else YahooProvider()
+    if browser:
+        open_browser_when_ready(
+            ui_url,
+            token_path,
+            directory,
+            expected_provider=source.value,
+        )
+    raise typer.Exit(
+        run_serve(
+            provider,
+            data_dir=directory,
+            token_path=token_path,
+            host=host,
+            port=port,
+            queue_limit=queue_limit,
+            automation=not preserve_automation,
+        )
+    )
+
+
+def autostart_manager(ctx: typer.Context) -> "AutostartManager":
+    from qscan.adapters.autostart import AutostartManager
+    from qscan.bootstrap import resolve_data_dir
+
+    return AutostartManager(
+        executable=Path(shutil.which(sys.argv[0]) or sys.argv[0]),
+        data_dir=resolve_data_dir(ctx.obj[0]),
+    )
+
+
+@autostart_commands.command("status")
+def autostart_status(ctx: typer.Context) -> None:
+    """Show whether the user-level login launcher is installed."""
+    emit(autostart_manager(ctx).status())
+
+
+@autostart_commands.command("install")
+def autostart_install(ctx: typer.Context) -> None:
+    """Install the user-level login launcher; the host must be awake to run."""
+    status = autostart_manager(ctx).install()
+    emit(status)
+    if not status.supported or not status.installed:
+        raise typer.Exit(2)
 
 
 @app.command()

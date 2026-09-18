@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased — Zero-friction daily workflow (2026-09-18)
+
+### Implemented
+
+- Added `qscan start` as a loopback-only local launcher. It initializes/upgrades the
+  data directory, starts and opens the existing UI, and reuses a running endpoint
+  only after a nonce-bound HMAC challenge proves the expected qscan instance and
+  data-directory identity.
+- Added automatic browser authentication with a 15-minute signed HttpOnly,
+  SameSite=Strict cookie and in-memory CSRF token. Cookie mutations require exact
+  trusted Origin plus CSRF proof; advanced Bearer clients remain compatible.
+- Added migration 0005 and internal managed-universe persistence: immutable English
+  Wikipedia S&P 500 snapshots, stable managed-watchlist identity, source/license/
+  revision provenance, atomic LKG publication, broad member-count validation,
+  distinct share lines, and a seven-calendar-day stale limit.
+- Added migrations 0006–0007 for 50-symbol resumable checkpoints, daily job
+  identity, report publication/latest pointer, and notification delivery state.
+- Added the packaged coordinator to `qscan start`, newest-session catch-up, explicit
+  run-now attempts, automatic HTML reports, bounded notification retry, and
+  authenticated automation/report endpoints.
+- Added Today / History / Settings / Advanced navigation and packaged built assets;
+  ordinary browser use no longer requires token entry or manual symbols.
+- Added `qscan autostart install|status` definitions for macOS launchd, Windows
+  Task Scheduler, and Linux systemd user services. No schedule is installed by
+  repository tests or by `qscan start`.
+
+The [Wikipedia source](https://en.wikipedia.org/wiki/List_of_S%26P_500_companies)
+is a public secondary list under
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/). It is not an
+official S&P or exchange feed, not certified, and not point-in-time constituent
+history. Source attribution, share-alike, and other applicable use restrictions
+remain the redistributor's responsibility.
+
+### Remaining limitations
+
+- Native notification workflow has not been exercised on all three supported OSes.
+- macOS `osascript` display returned exit 0 in this run but cannot provide a
+  clickable report action; Windows/Linux actions are covered by injected-runner
+  tests only.
+- Delayed final bars use normal coordinator ticks; no exponential retry schedule is
+  claimed. Remote/phone delivery remains unconfigured.
+
 ## 0.1.0rc1＋Phase 6A — Local Candidate Review Workbench (2026-09-06)
 
 **定位不變：** 單人本地 CLI + loopback API + 本地覆核 UI；不是公開多使用者產品，

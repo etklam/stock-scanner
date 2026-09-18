@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError } from "./client";
+import type { AutomationStatus } from "./client";
 
 // Minimal fetch stub returning one queued response per call.
 function stubFetch(responses: Array<{ status: number; body?: unknown }>) {
@@ -29,6 +30,25 @@ function client(): { api: ApiClient; unauthorized: ReturnType<typeof vi.fn> } {
 }
 
 describe("ApiClient", () => {
+  it("bootstraps a browser session and uses its in-memory CSRF token", async () => {
+    const calls = stubFetch([
+      { status: 200, body: { csrf_token: "csrf-memory-only" } },
+      { status: 201, body: { id: "wl", name: "browser", revision: 1, symbols: ["AAPL"] } },
+    ]);
+    const unauthorized = vi.fn();
+    const api = new ApiClient("", () => null, unauthorized);
+
+    await api.establishBrowserSession();
+    await api.createWatchlist("browser", ["AAPL"]);
+
+    expect(calls[0]!.url).toBe("/api/v1/auth/session");
+    expect(calls[0]!.init.method).toBe("POST");
+    expect(calls[0]!.init.credentials).toBe("same-origin");
+    const headers = calls[1]!.init.headers as Record<string, string>;
+    expect(headers["X-CSRF-Token"]).toBe("csrf-memory-only");
+    expect(headers.Authorization).toBeUndefined();
+  });
+
   it("unwraps ErrorEnvelope errors with code and status", async () => {
     stubFetch([
       {
@@ -65,7 +85,7 @@ describe("ApiClient", () => {
       as_of_session: "2026-09-04",
       watchlist_revision: 1,
       ruleset_version: "1.0.0",
-    };
+    } as const;
     const calls = stubFetch([
       { status: 429, body: { error: { code: "QUEUE_LIMIT_REACHED", message: "x", request_id: "r" } } },
       { status: 429, body: { error: { code: "QUEUE_LIMIT_REACHED", message: "x", request_id: "r" } } },
@@ -113,6 +133,36 @@ describe("ApiClient", () => {
     expect(new URL(calls[0]!.url, "http://localhost").search).not.toContain("candidate=");
     expect(new URL(calls[1]!.url, "http://localhost").search).toContain("stage=FORMING");
     expect(new URL(calls[1]!.url, "http://localhost").search).toContain("candidate=true");
+  });
+
+  it("uses the automation control endpoints without inventing a request body", async () => {
+    const status = {
+      enabled: true,
+      latest_completed_session: null,
+      job: null,
+      run: null,
+      next_due_session: "2026-09-18",
+      next_due_time: null,
+      universe: null,
+      report: null,
+      notification: null,
+    } satisfies AutomationStatus;
+    const calls = stubFetch([
+      { status: 200, body: status },
+      { status: 200, body: status },
+      { status: 202, body: status },
+    ]);
+    const { api } = client();
+
+    await api.enableAutomation();
+    await api.pauseAutomation();
+    await api.runAutomationNow();
+
+    expect(calls.map(({ url, init }) => [url, init.method, init.body])).toEqual([
+      ["/api/v1/automation/enable", "POST", undefined],
+      ["/api/v1/automation/pause", "POST", undefined],
+      ["/api/v1/automation/run-now", "POST", undefined],
+    ]);
   });
 
   it("aborts a never-resolving submit at the application deadline", async () => {

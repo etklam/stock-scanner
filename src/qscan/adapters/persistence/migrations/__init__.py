@@ -1,3 +1,3 @@
 """Packaged Alembic resources."""
 
-HEAD = "0004"
+HEAD = "0007"

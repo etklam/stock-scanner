@@ -47,6 +47,61 @@ export type Review = components["schemas"]["SavedReviewOut"];
 
 export type Page<T> = { items: T[]; next_cursor: string | null };
 
+export type AutomationCounts = {
+  requested: number;
+  evaluated: number;
+  excluded: number;
+  data_error: number;
+  candidate: number;
+};
+
+export type AutomationStatus = {
+  enabled: boolean;
+  latest_completed_session: string | null;
+  job: {
+    id: string;
+    session: string;
+    attempt: number;
+    run_id: string;
+  } | null;
+  run: {
+    id: string;
+    state: string;
+    progress: {
+      phase: "market_data" | "analysis" | "publication";
+      processed_symbols: number;
+      total_symbols: number;
+      updated_at: string;
+    } | null;
+    counts: AutomationCounts | null;
+  } | null;
+  next_due_session: string | null;
+  next_due_time: string | null;
+  universe: {
+    snapshot_id: string;
+    source_url: string;
+    source_license: string;
+    source_revision: string;
+    retrieved_at: string;
+    member_count: number;
+    freshness: "CURRENT" | "STALE";
+  } | null;
+  report: LatestReport | null;
+  notification: {
+    outcome: "DELIVERED" | "DENIED" | "UNAVAILABLE" | "FAILED" | null;
+    attempts: number;
+    detail: string | null;
+  } | null;
+};
+
+export type LatestReport = {
+  run_id: string | null;
+  state: "PENDING" | "PUBLISHED" | "FAILED" | "MISSING";
+  attempts: number;
+  url: string | null;
+  error: string | null;
+};
+
 const APPLICATION_DEADLINE_MS = 15_000;
 
 function deadline(signal: AbortSignal | undefined, timeoutMs: number) {
@@ -92,6 +147,8 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 export class ApiClient {
+  private browserCsrf: string | null = null;
+
   constructor(
     private readonly base: string,
     private getToken: () => string | null,
@@ -104,12 +161,16 @@ export class ApiClient {
     init?: { body?: unknown; idempotencyKey?: string; signal?: AbortSignal; timeoutMs?: number },
   ): Promise<T> {
     const token = this.getToken();
-    if (token === null && path.startsWith("/api/")) {
-      // Never fire authenticated business requests without a token.
+    const sessionBootstrap = path === "/api/v1/auth/session";
+    if (token === null && this.browserCsrf === null && path.startsWith("/api/") && !sessionBootstrap) {
+      // Never fire authenticated business requests before either auth path is ready.
       throw new ApiError(401, undefined);
     }
     const headers: Record<string, string> = { Accept: "application/json" };
     if (token !== null) headers.Authorization = `Bearer ${token}`;
+    if (token === null && this.browserCsrf !== null && !["GET", "HEAD", "OPTIONS"].includes(method)) {
+      headers["X-CSRF-Token"] = this.browserCsrf;
+    }
     if (init?.body !== undefined) headers["Content-Type"] = "application/json";
     if (init?.idempotencyKey) headers["Idempotency-Key"] = init.idempotencyKey;
     const timed = deadline(init?.signal, init?.timeoutMs ?? APPLICATION_DEADLINE_MS);
@@ -117,11 +178,13 @@ export class ApiClient {
       const response = await fetch(this.base + path, {
         method,
         headers,
+        credentials: "same-origin",
         body: init?.body === undefined ? undefined : JSON.stringify(init.body),
         signal: timed.signal,
       });
       if (response.status === 401) {
         // Token rotated or wrong: force reconnect; the caller clears caches.
+        this.browserCsrf = null;
         this.onUnauthorized();
         throw new ApiError(401, undefined);
       }
@@ -140,6 +203,12 @@ export class ApiClient {
     } finally {
       timed.dispose();
     }
+  }
+
+  async establishBrowserSession(): Promise<void> {
+    const session = await this.request<{ csrf_token: string }>("POST", "/api/v1/auth/session");
+    if (!session.csrf_token) throw new ApiError(500, undefined);
+    this.browserCsrf = session.csrf_token;
   }
 
   /** POST /scans with a caller-owned idempotency key. Retries on 429 reuse
@@ -205,6 +274,26 @@ export class ApiClient {
       "/api/v1/sessions/current",
       { signal },
     );
+  }
+
+  automationStatus(signal?: AbortSignal) {
+    return this.request<AutomationStatus>("GET", "/api/v1/automation/status", { signal });
+  }
+
+  enableAutomation(signal?: AbortSignal) {
+    return this.request<AutomationStatus>("POST", "/api/v1/automation/enable", { signal });
+  }
+
+  pauseAutomation(signal?: AbortSignal) {
+    return this.request<AutomationStatus>("POST", "/api/v1/automation/pause", { signal });
+  }
+
+  runAutomationNow(signal?: AbortSignal) {
+    return this.request<AutomationStatus>("POST", "/api/v1/automation/run-now", { signal });
+  }
+
+  latestReport(signal?: AbortSignal) {
+    return this.request<LatestReport>("GET", "/api/v1/reports/latest", { signal });
   }
 
   scansPage(limit: number, cursor?: string | null, signal?: AbortSignal) {

@@ -20,6 +20,7 @@ from qscan.application.contracts import (
     InputItem,
     InputSnapshot,
     Instrument,
+    ManagedRun,
     Progress,
     Provenance,
     Provider,
@@ -28,6 +29,7 @@ from qscan.application.contracts import (
     RefreshResult,
     Repository,
     Run,
+    RunExecution,
     ScanResult,
     ServiceLock,
     Snapshots,
@@ -69,8 +71,17 @@ class WatchlistService:
         content = "\n".join(symbols).encode("utf-8")
         return self.import_content(name, content, "txt")
 
-    def rename(self, identity: UUID, name: str, expected_revision: int) -> Watchlist:
+    def _manual_watchlist(self, identity: UUID) -> Watchlist:
         current = self.repository.watchlist(identity)
+        if self.repository.managed_snapshot_id(current) is not None:
+            raise ApplicationError(
+                ErrorCode.FORBIDDEN,
+                "Managed universe membership can only be changed by its source refresh",
+            )
+        return current
+
+    def rename(self, identity: UUID, name: str, expected_revision: int) -> Watchlist:
+        current = self._manual_watchlist(identity)
         if current.revision != expected_revision:
             raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT)
         value = Watchlist(
@@ -83,6 +94,7 @@ class WatchlistService:
         return value
 
     def delete(self, identity: UUID) -> None:
+        self._manual_watchlist(identity)
         self.repository.delete_watchlist(identity)
 
     def import_named(
@@ -165,7 +177,7 @@ class WatchlistService:
                 if len(instruments) > 2000:
                     raise ValueError("Watchlist exceeds 2000 symbols")
             if watchlist_id is not None:
-                old = self.repository.watchlist(watchlist_id)
+                old = self._manual_watchlist(watchlist_id)
                 if old.revision != expected_revision:
                     raise ApplicationError(ErrorCode.WATCHLIST_VERSION_CONFLICT)
             elif expected_revision is not None:
@@ -447,6 +459,7 @@ class ScanService:
         as_of: date | None = None,
         rules: RuleConfig | None = None,
         mode: DataMode = DataMode.AUTO,
+        chunk_size: int = 50,
     ) -> Run:
         """Build a QUEUED run fixing watchlist, sessions, rules, and data mode.
 
@@ -465,6 +478,12 @@ class ScanService:
             rules=config,
             config_hash=config.config_hash(),
             data_mode=mode,
+            provider=self.repository.provider,
+            managed=(
+                ManagedRun(universe_snapshot_id=snapshot_id, chunk_size=chunk_size)
+                if (snapshot_id := self.repository.managed_snapshot_id(watchlist)) is not None
+                else None
+            ),
             requested_at=self.clock.now().astimezone(UTC),
             counts=Counts(requested=len(watchlist.instruments)),
         )
@@ -498,9 +517,9 @@ class ScanService:
                 ),
             )
             return None
-        expected = self.calendar.sessions(
-            run.context.as_of_session - timedelta(days=1100), run.context.as_of_session
-        )[-504:]
+        if run.managed is not None:
+            return self._execute_resumable(run, should_stop)
+        expected = self._expected_sessions(run)
         now = self.clock.now().astimezone(UTC)
         total = len(run.watchlist.instruments)
         claimed = run.model_copy(
@@ -521,7 +540,8 @@ class ScanService:
 
             claimed = claimed.model_copy(
                 update={
-                    "comparison": ComparisonService(self.repository, self.snapshots).bind(claimed)
+                    "comparison": claimed.comparison
+                    or ComparisonService(self.repository, self.snapshots).bind(claimed)
                 }
             )
             items = []
@@ -577,6 +597,144 @@ class ScanService:
         except Exception:
             self._failed(claimed)
             raise
+
+    def _expected_sessions(self, run: Run) -> tuple[date, ...]:
+        return self.calendar.sessions(
+            run.context.as_of_session - timedelta(days=1100), run.context.as_of_session
+        )[-504:]
+
+    def _execute_resumable(self, run: Run, should_stop: Callable[[], bool] | None) -> Run | None:
+        """Execute or resume a managed run using only validated run-scoped checkpoints."""
+        assert run.managed is not None
+        now = self.clock.now().astimezone(UTC)
+        total = len(run.watchlist.instruments)
+        try:
+            saved = self.repository.execution(run.id)
+        except ApplicationError:
+            self.repository.fail_queued(
+                run.id,
+                ErrorCode.EXECUTION_INCOMPATIBLE,
+                ("invalid resumable execution state",),
+            )
+            return None
+        if saved is None:
+            from qscan.application.reporting import ComparisonService
+
+            claimed = run.model_copy(
+                update={
+                    "state": RunState.RUNNING,
+                    "started_at": now,
+                    "progress": Progress(
+                        phase="market_data",
+                        processed_symbols=0,
+                        total_symbols=total,
+                        updated_at=now,
+                    ),
+                }
+            )
+            claimed = claimed.model_copy(
+                update={
+                    "comparison": claimed.comparison
+                    or ComparisonService(self.repository, self.snapshots).bind(claimed)
+                }
+            )
+            execution = RunExecution(
+                universe_snapshot_id=run.managed.universe_snapshot_id,
+                calendar_version=self.calendar.version,
+                expected_sessions=self._expected_sessions(run),
+                provider=self.repository.provider,
+                engine_version=__version__,
+                rules=run.rules,
+                config_hash=run.config_hash,
+                comparison=claimed.comparison,
+                instrument_ids=tuple(item.id for item in run.watchlist.instruments),
+                chunk_size=run.managed.chunk_size,
+            )
+            items: tuple[InputItem, ...] = ()
+            if not self.repository.claim(claimed, execution):
+                return None
+        else:
+            execution, items = saved
+            if not self._execution_matches(run, execution):
+                self.repository.fail_queued(
+                    run.id,
+                    ErrorCode.EXECUTION_INCOMPATIBLE,
+                    ("frozen execution metadata no longer matches the accepted run",),
+                )
+                return None
+            claimed = run.model_copy(
+                update={
+                    "state": RunState.RUNNING,
+                    "started_at": run.started_at or now,
+                    "comparison": execution.comparison,
+                    "progress": Progress(
+                        phase="market_data",
+                        processed_symbols=execution.next_index,
+                        total_symbols=total,
+                        updated_at=now,
+                    ),
+                }
+            )
+            if not self.repository.claim(claimed):
+                return None
+
+        started = perf_counter()
+        collected = list(items)
+        try:
+            while len(collected) < total:
+                if should_stop is not None and should_stop():
+                    # Leave RUNNING: startup recovery validates and requeues this exact run.
+                    return None
+                start = len(collected)
+                stop = min(start + execution.chunk_size, total)
+                chunk = tuple(
+                    self.market.obtain(instrument, execution.expected_sessions, claimed.data_mode)
+                    for instrument in claimed.watchlist.instruments[start:stop]
+                )
+                progress = Progress(
+                    phase="market_data",
+                    processed_symbols=stop,
+                    total_symbols=total,
+                    updated_at=self.clock.now().astimezone(UTC),
+                )
+                self.repository.checkpoint_chunk(run.id, chunk, progress=progress)
+                collected.extend(chunk)
+            items_tuple = tuple(collected)
+            watchlist = claimed.watchlist.model_copy(
+                update={"instruments": tuple(item.instrument for item in items_tuple)}
+            )
+            claimed = claimed.model_copy(update={"watchlist": watchlist})
+            snapshot = InputSnapshot(
+                context=claimed.context,
+                rules=execution.rules,
+                watchlist=watchlist,
+                calendar_version=execution.calendar_version,
+                expected_sessions=execution.expected_sessions,
+                items=items_tuple,
+            )
+            return self._complete(
+                claimed, snapshot, {"market_validation": perf_counter() - started}
+            )
+        except Exception:
+            self._failed(claimed)
+            raise
+
+    def _execution_matches(self, run: Run, execution: RunExecution) -> bool:
+        assert run.managed is not None
+        return (
+            execution.universe_snapshot_id == run.managed.universe_snapshot_id
+            and execution.chunk_size == run.managed.chunk_size
+            and execution.calendar_version == self.calendar.version
+            and execution.provider == self.repository.provider == run.provider
+            and execution.engine_version == __version__ == run.context.engine_version
+            and execution.rules == run.rules
+            and execution.config_hash == run.config_hash
+            and execution.instrument_ids
+            == tuple(instrument.id for instrument in run.watchlist.instruments)
+            and execution.expected_sessions[-2:]
+            == (run.context.reference_session, run.context.as_of_session)
+            and execution.comparison == run.comparison
+        )
 
     def scan(
         self,

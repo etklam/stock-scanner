@@ -698,7 +698,11 @@ HTML 對名單名稱及文字 escape。CSV 對可能被試算表當成公式的*
 
 ### 11.1 V1 必須完成
 
-預設只 bind `127.0.0.1`，不聲稱「本機所以不用防護」。所有業務 API 要求本地 bearer token，由 init 產生並存於使用者設定區，CLI 直接核心模式不需經 token；health endpoint 只暴露極少資訊。
+The server binds to loopback by default; local operation is not treated as an
+absence of a trust boundary. Application endpoints require either the signed local
+browser session or the local Bearer token created by init. Cookie-authenticated
+mutations additionally require exact Origin and CSRF proof. Direct CLI core access
+does not use HTTP authentication, and health endpoints expose only minimal state.
 
 所有帶 Origin 的請求依 allowlist 驗證，CORS 預設不開放；不使用 `*`，限制 Host，不提供無認證的寫入表單。OpenAPI UI 僅在本地／已授權開發模式開放。token 不放 query string、Git、HTML 報告或 log。
 
@@ -942,12 +946,12 @@ thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測�
   中文原因 mapping＋未知 code fallback、只載入選中標的、切換取消舊請求）。
 - [x] 集中 typed API client：型別由 OpenAPI 生成（openapi-typescript）並有
   contract check；集中 ErrorEnvelope/401/409/429/timeout；retry 沿用原
-  key/body；terminal 停止輪詢；429 有界退避。token 只喺記憶體；401/輪換
-  清敏感 cache、保留非機密 pending。
+  key/body；terminal 停止輪詢；429 有界退避。Browser session 的 CSRF token
+  及進階 Bearer token 只喺記憶體；401 清敏感 cache、保留非機密 pending。
 - [x] 本地安全：正式 UI 同 origin（serve 自己嘅 loopback origins 構成
   allowlist，不反射 request）；`--dev-origin` 係明確開發設定，proxy 唔剝
-  Origin；UI shell 匿名、業務 API 全部要 token；`/api` 404 唔被 SPA fallback
-  吃掉；React escaping，無 HTML 注入。
+  Origin；UI shell 匿名、業務 API 要有效 browser session 或 Bearer credential；
+  `/api` 404 唔被 SPA fallback 吃掉；React escaping，無 HTML 注入。
 - [x] 最小覆核資料：migration 0004 `scan_reviews`（principal+run+instrument
   scope、revision 衝突回 409、只可標記有有效 evaluation 的標的）；獨立於
   immutable results；replay 唔繼承；備份還原 round-trip；review-export CSV
@@ -962,6 +966,67 @@ thread 重入死結（[ADR 0005](adr/0005-http-api-executor.md)）。已實測�
 
 實測證據、未完成項（真人標記、跨平台手跑）與本輪範圍見
 [release checklist](release-checklist.md) Phase 6A 節。
+
+### Phase 6B — Zero-friction managed daily scan (implementation status, 2026-09-18)
+
+[ADR 0007](adr/0007-zero-friction-managed-daily-scan.md) supersedes the earlier
+product assumption that every ordinary run starts with a user-supplied watchlist.
+The target flow is managed universe to daily scan to report/notification, while
+manual watchlists and Bearer clients remain advanced interfaces. The checked items
+below are the current code boundary.
+
+**Implemented:**
+
+- [x] `qscan start` is a loopback-only launcher. It initializes/upgrades the data
+  directory, starts the existing local API/UI runtime, and opens `/ui/` after a
+  nonce-based HMAC challenge proves both qscan instance identity and the expected
+  data-directory identity. It reuses an existing process only after that proof.
+- [x] The same-origin UI automatically obtains a 15-minute signed HttpOnly,
+  SameSite=Strict browser cookie and an in-memory CSRF token. Cookie-authenticated
+  mutations require an exact trusted Origin and matching CSRF header. Existing
+  Bearer clients remain supported, including their no-Origin native-client path.
+- [x] Migration 0005 and `UniverseService` persist immutable, provenance-bearing
+  managed S&P 500 snapshots and atomically advance a stable managed watchlist/LKG
+  pointer. Refresh validates the full table, unique symbols, and a broad 450–550
+  count bound; failed acquisition preserves the LKG. An LKG is accepted through
+  exactly seven calendar days and rejected as `STALE_DATA` after that.
+- [x] `WikipediaSP500Source` reads English Wikipedia's [List of S&P 500
+  companies](https://en.wikipedia.org/wiki/List_of_S%26P_500_companies) through the
+  MediaWiki API and records article URL, [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), page revision, source
+  observation time, retrieval time, member count, and content hash. Share lines
+  remain distinct instruments. This is a public secondary source, **not an official
+  S&P or exchange feed**, and `effective_date` is currently unknown; it must not be
+  represented as certified or point-in-time constituent history. Redistribution
+  remains subject to source attribution, share-alike, and other applicable terms.
+- [x] A transport-neutral notification contract and bounded native desktop adapter
+  exist for macOS (`osascript`), Windows (PowerShell toast), and Linux
+  (`notify-send`). Results distinguish acknowledged attempt, permission denial,
+  unavailable platform/command, and failure; acknowledged does not mean the user
+  saw the notification. Report actions accept only uncredentialed loopback URLs.
+
+**Packaged workflow:**
+
+- [x] Wire managed-universe refresh into the packaged `qscan start` coordinator.
+- [x] Define and persist managed daily job identity, newest-session catch-up, forced
+  attempts, and the frozen accepted input set.
+- [x] Implement 50-symbol durable chunk checkpoints and restart/resume batching.
+- [x] Publish automatic reports and durable notification state with independent
+  retry/deduplication state.
+- [x] Build Today-first UI, latest-report navigation, History, Settings and Advanced.
+- [x] Provide explicit `qscan autostart install|status` adapters for launchd,
+  Task Scheduler and systemd user services; tests do not install them.
+
+**Remaining:**
+
+- [ ] Complete notification validation on Windows and Linux and add a clickable
+  macOS report action. The macOS display command returned exit 0 in this run;
+  Windows/Linux actions are covered by fake-runner tests only.
+- [ ] Measure provider final-bar delay and add a dedicated bounded backoff policy if
+  fixed coordinator ticks prove insufficient.
+
+The existing `scripts/daily_scan.py` remains a user-configured compatibility
+wrapper for manual watchlists. It is not the packaged managed coordinator and must
+not be used as evidence that the pending items are complete.
 
 ---
 

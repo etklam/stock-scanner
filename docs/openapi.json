@@ -1,6 +1,178 @@
 {
   "components": {
     "schemas": {
+      "AutomationJobOut": {
+        "additionalProperties": false,
+        "properties": {
+          "attempt": {
+            "title": "Attempt",
+            "type": "integer"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "run_id": {
+            "format": "uuid",
+            "title": "Run Id",
+            "type": "string"
+          },
+          "session": {
+            "format": "date",
+            "title": "Session",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "session",
+          "attempt",
+          "run_id"
+        ],
+        "title": "AutomationJobOut",
+        "type": "object"
+      },
+      "AutomationRunOut": {
+        "additionalProperties": false,
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CountsOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ProgressOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "state": {
+            "title": "State",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ],
+        "title": "AutomationRunOut",
+        "type": "object"
+      },
+      "AutomationStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "job": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationJobOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_completed_session": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Completed Session"
+          },
+          "next_due_session": {
+            "anyOf": [
+              {
+                "format": "date",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due Session"
+          },
+          "next_due_time": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Due Time"
+          },
+          "notification": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/NotificationStatusOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "report": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ReportStatusOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AutomationRunOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "universe": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/UniverseStatusOut"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "AutomationStatusOut",
+        "type": "object"
+      },
       "Change": {
         "additionalProperties": false,
         "properties": {
@@ -368,6 +540,46 @@
         "type": "object"
       },
       "JsonValue": {},
+      "NotificationStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "outcome": {
+            "anyOf": [
+              {
+                "enum": [
+                  "DELIVERED",
+                  "DENIED",
+                  "UNAVAILABLE",
+                  "FAILED"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Outcome"
+          }
+        },
+        "title": "NotificationStatusOut",
+        "type": "object"
+      },
       "PatchWatchlist": {
         "additionalProperties": false,
         "properties": {
@@ -520,6 +732,65 @@
           "symbols"
         ],
         "title": "ReplaceSymbols",
+        "type": "object"
+      },
+      "ReportStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "attempts": {
+            "default": 0,
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "format": "uuid",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "state": {
+            "enum": [
+              "PENDING",
+              "PUBLISHED",
+              "FAILED",
+              "MISSING"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Url"
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "title": "ReportStatusOut",
         "type": "object"
       },
       "ResultOut": {
@@ -1240,6 +1511,56 @@
         "title": "SymbolAnalysis",
         "type": "object"
       },
+      "UniverseStatusOut": {
+        "additionalProperties": false,
+        "properties": {
+          "freshness": {
+            "enum": [
+              "CURRENT",
+              "STALE"
+            ],
+            "title": "Freshness",
+            "type": "string"
+          },
+          "member_count": {
+            "title": "Member Count",
+            "type": "integer"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "snapshot_id": {
+            "format": "uuid",
+            "title": "Snapshot Id",
+            "type": "string"
+          },
+          "source_license": {
+            "title": "Source License",
+            "type": "string"
+          },
+          "source_revision": {
+            "title": "Source Revision",
+            "type": "string"
+          },
+          "source_url": {
+            "title": "Source Url",
+            "type": "string"
+          }
+        },
+        "required": [
+          "snapshot_id",
+          "source_url",
+          "source_license",
+          "source_revision",
+          "retrieved_at",
+          "member_count",
+          "freshness"
+        ],
+        "title": "UniverseStatusOut",
+        "type": "object"
+      },
       "WatchlistLinks": {
         "additionalProperties": false,
         "properties": {
@@ -1385,6 +1706,96 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/automation/enable": {
+      "post": {
+        "operationId": "automation_enable_api_v1_automation_enable_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Automation Enable"
+      }
+    },
+    "/api/v1/automation/pause": {
+      "post": {
+        "operationId": "automation_pause_api_v1_automation_pause_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Automation Pause"
+      }
+    },
+    "/api/v1/automation/run-now": {
+      "post": {
+        "operationId": "automation_run_now_api_v1_automation_run_now_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Automation Run Now"
+      }
+    },
+    "/api/v1/automation/status": {
+      "get": {
+        "operationId": "automation_status_api_v1_automation_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AutomationStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Automation Status"
+      }
+    },
+    "/api/v1/reports/latest": {
+      "get": {
+        "operationId": "latest_report_api_v1_reports_latest_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportStatusOut"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Latest Report"
+      }
+    },
     "/api/v1/rulesets": {
       "get": {
         "operationId": "rulesets_api_v1_rulesets_get",

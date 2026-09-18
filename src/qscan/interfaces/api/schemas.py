@@ -201,3 +201,53 @@ class SavedReviewOut(Contract):
 
 class ReviewsPage(Contract):
     items: tuple[SavedReviewOut, ...]
+
+
+class AutomationJobOut(Contract):
+    id: UUID
+    session: date
+    attempt: int
+    run_id: UUID
+
+
+class AutomationRunOut(Contract):
+    id: UUID
+    state: str
+    progress: ProgressOut | None = None
+    counts: CountsOut | None = None
+
+
+class UniverseStatusOut(Contract):
+    snapshot_id: UUID
+    source_url: str
+    source_license: str
+    source_revision: str
+    retrieved_at: datetime
+    member_count: int
+    freshness: Literal["CURRENT", "STALE"]
+
+
+class ReportStatusOut(Contract):
+    run_id: UUID | None = None
+    state: Literal["PENDING", "PUBLISHED", "FAILED", "MISSING"]
+    attempts: int = 0
+    url: str | None = None
+    error: str | None = None
+
+
+class NotificationStatusOut(Contract):
+    outcome: Literal["DELIVERED", "DENIED", "UNAVAILABLE", "FAILED"] | None = None
+    attempts: int = 0
+    detail: str | None = None
+
+
+class AutomationStatusOut(Contract):
+    enabled: bool
+    latest_completed_session: date | None = None
+    job: AutomationJobOut | None = None
+    run: AutomationRunOut | None = None
+    next_due_session: date | None = None
+    next_due_time: datetime | None = None
+    universe: UniverseStatusOut | None = None
+    report: ReportStatusOut | None = None
+    notification: NotificationStatusOut | None = None

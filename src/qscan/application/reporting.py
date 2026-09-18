@@ -28,6 +28,7 @@ class ComparisonService:
 
     def bind(self, run: Run) -> Comparison:
         previous = run.context.reference_session
+        cutoff = run.started_at or run.requested_at
         eligible = []
         rejected: set[str] = set()
         for old in self.repository.summaries(None):
@@ -35,7 +36,7 @@ class ComparisonService:
                 continue
             if old.source_run_id is not None or old.finished_at is None:
                 continue
-            if run.started_at is None or old.finished_at > run.started_at:
+            if old.finished_at > cutoff:
                 continue
             reasons = self.incompatibilities(run, old)
             if reasons:

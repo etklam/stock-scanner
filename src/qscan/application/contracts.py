@@ -73,6 +73,56 @@ class Watchlist(Contract):
     instruments: tuple[Instrument, ...] = Field(min_length=1, max_length=2000)
 
 
+class UniverseMember(Contract):
+    canonical_symbol: str
+    display_symbol: str
+    provider_symbol: str
+    instrument: Instrument
+
+    @model_validator(mode="after")
+    def consistent_symbols(self) -> "UniverseMember":
+        if (
+            self.instrument.display_symbol != self.display_symbol
+            or self.instrument.provider_symbol != self.provider_symbol
+        ):
+            raise ValueError("Universe symbol mapping differs from instrument")
+        return self
+
+
+class UniverseObservation(Contract):
+    source_url: str
+    source_license: str
+    source_revision: str
+    observed_at: datetime
+    effective_date: date | None = None
+    symbols: tuple[str, ...]
+
+
+class UniverseSnapshot(Contract):
+    id: UUID
+    universe_key: Literal["sp500"] = "sp500"
+    watchlist_id: UUID
+    source_url: str
+    source_license: str
+    source_revision: str
+    observed_at: datetime
+    retrieved_at: datetime
+    effective_date: date | None = None
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    actual_member_count: int = Field(ge=1)
+    members: tuple[UniverseMember, ...]
+
+    @model_validator(mode="after")
+    def valid_members(self) -> "UniverseSnapshot":
+        if self.actual_member_count != len(self.members):
+            raise ValueError("Universe member count mismatch")
+        if len({member.canonical_symbol for member in self.members}) != len(self.members):
+            raise ValueError("Duplicate canonical universe symbol")
+        if len({member.instrument.id for member in self.members}) != len(self.members):
+            raise ValueError("Duplicate universe instrument")
+        return self
+
+
 @dataclass(frozen=True)
 class RawPrices:
     rows: tuple[tuple[date, float], ...]
@@ -229,6 +279,44 @@ class Comparison(Contract):
     changes: tuple[Change, ...] = ()
 
 
+class ManagedRun(Contract):
+    """Acceptance-time binding that opts a managed-universe run into batching."""
+
+    universe_snapshot_id: UUID
+    chunk_size: int = Field(default=50, ge=1, le=200)
+
+
+class RunExecution(Contract):
+    """Mutable resumable state kept outside immutable final run artifacts."""
+
+    schema_version: Literal[1] = 1
+    universe_snapshot_id: UUID
+    calendar_version: str
+    expected_sessions: tuple[date, ...]
+    provider: str
+    engine_version: str
+    rules: RuleConfig
+    config_hash: str
+    comparison: Comparison
+    instrument_ids: tuple[UUID, ...]
+    chunk_size: int = Field(ge=1, le=200)
+    next_index: int = Field(default=0, ge=0)
+
+    @model_validator(mode="after")
+    def valid_execution(self) -> "RunExecution":
+        if self.rules.config_hash() != self.config_hash:
+            raise ValueError("Execution rules/config mismatch")
+        if len(self.expected_sessions) < 2 or tuple(sorted(set(self.expected_sessions))) != (
+            self.expected_sessions
+        ):
+            raise ValueError("Invalid execution sessions")
+        if not self.instrument_ids or len(set(self.instrument_ids)) != len(self.instrument_ids):
+            raise ValueError("Invalid execution instruments")
+        if self.next_index > len(self.instrument_ids):
+            raise ValueError("Execution cursor exceeds instruments")
+        return self
+
+
 ReviewLabel = Literal["worth_reviewing", "borderline", "not_useful"]
 
 
@@ -267,10 +355,52 @@ class Run(Contract):
     data_mode: DataMode = DataMode.AUTO
     # Provider this run was accepted under; execution refuses a mismatched server.
     provider: str | None = None
+    managed: ManagedRun | None = None
     timings: dict[str, float] = {}
     error: ErrorCode | None = None
     warnings: tuple[str, ...] = ()
     results: tuple[ScanResult, ...] = ()
+
+
+class DailyJob(Contract):
+    id: UUID
+    session: date
+    provider: str
+    config_hash: str
+    attempt: int = Field(ge=0)
+    universe_snapshot_id: UUID
+    run_id: UUID
+    accepted_at: datetime
+
+
+class ReportPublication(Contract):
+    run_id: UUID
+    state: Literal["PENDING", "PUBLISHED", "FAILED"]
+    attempts: int = Field(ge=0)
+    relative_path: str | None = None
+    error: str | None = None
+    updated_at: datetime
+
+
+class NotificationDelivery(Contract):
+    run_id: UUID
+    dedup_key: str
+    attempts: int = Field(ge=0)
+    outcome: Literal["DELIVERED", "DENIED", "UNAVAILABLE", "FAILED"] | None = None
+    detail: str | None = None
+    updated_at: datetime
+
+
+class AutomationStatus(Contract):
+    enabled: bool
+    latest_job: DailyJob | None = None
+    latest_run: Run | None = None
+    next_due_session: date | None = None
+    next_due_time: datetime | None = None
+    universe: UniverseSnapshot | None = None
+    universe_freshness: Literal["CURRENT", "STALE", "MISSING"] = "MISSING"
+    report: ReportPublication | None = None
+    notification: NotificationDelivery | None = None
 
 
 class Clock(Protocol):
@@ -291,10 +421,33 @@ class Provider(Protocol):
     def fetch(self, instrument: Instrument, start: date, end: date) -> RawPrices: ...
 
 
+class UniverseSource(Protocol):
+    def fetch(self) -> UniverseObservation: ...
+
+
 class Repository(Protocol):
     provider: str
 
     def save_watchlist(self, value: Watchlist, expected_revision: int | None) -> None: ...
+    def publish_universe(self, snapshot: UniverseSnapshot) -> None: ...
+    def current_universe(self, universe_key: str) -> UniverseSnapshot | None: ...
+    def managed_snapshot_id(self, watchlist: Watchlist) -> UUID | None: ...
+    def automation_enabled(self) -> bool: ...
+    def set_automation_enabled(self, enabled: bool) -> None: ...
+    def accept_daily_run(
+        self, run: Run, universe_snapshot_id: UUID, *, force: bool = False
+    ) -> tuple[DailyJob, bool]: ...
+    def latest_daily_job(self) -> DailyJob | None: ...
+    def daily_job_for_run(self, identity: UUID) -> DailyJob | None: ...
+    def daily_runs_pending_report(self) -> tuple[UUID, ...]: ...
+    def report_publication(self, identity: UUID) -> ReportPublication | None: ...
+    def latest_report_publication(self) -> ReportPublication | None: ...
+    def record_report_failure(self, identity: UUID, error: str) -> ReportPublication: ...
+    def record_report_success(self, identity: UUID, relative_path: str) -> ReportPublication: ...
+    def notification_delivery(self, identity: UUID) -> NotificationDelivery | None: ...
+    def record_notification(
+        self, identity: UUID, outcome: str, detail: str
+    ) -> NotificationDelivery: ...
     def delete_watchlist(self, identity: UUID) -> None: ...
     def watchlist(self, identity: UUID) -> Watchlist: ...
     def watchlists(self) -> tuple[Watchlist, ...]: ...
@@ -305,7 +458,15 @@ class Repository(Protocol):
     def enqueue(
         self, run: Run, idempotency_key: str, request_hash: str, queue_limit: int
     ) -> tuple[bool, tuple[UUID, str] | None]: ...
-    def claim(self, run: Run) -> bool: ...
+    def claim(self, run: Run, execution: RunExecution | None = None) -> bool: ...
+    def execution(self, identity: UUID) -> tuple[RunExecution, tuple[InputItem, ...]] | None: ...
+    def checkpoint_chunk(
+        self,
+        identity: UUID,
+        items: tuple[InputItem, ...],
+        *,
+        progress: Progress,
+    ) -> None: ...
     def update_progress(self, identity: UUID, progress: Progress) -> None: ...
     def next_queued(self) -> UUID | None: ...
     def run_owner(self, identity: UUID) -> str | None: ...

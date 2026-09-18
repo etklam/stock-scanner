@@ -7,6 +7,7 @@ sync function doing short DB work, and scans execute on the dedicated worker thr
 import hashlib
 import json
 import os
+import secrets
 import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -17,7 +18,7 @@ from uuid import UUID, uuid4
 import uvicorn
 from fastapi import Depends, FastAPI, Header, Query, Request, Response
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.datastructures import Headers
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -34,6 +35,8 @@ from qscan.application.contracts import (
     SavedReview,
     ScanResult,
 )
+from qscan.application.daily import DailyCoordinator
+from qscan.application.publication import PublicationService
 from qscan.bootstrap import Application
 from qscan.domain.models import ErrorCode, RunState, Stage
 from qscan.domain.rules import RuleConfig
@@ -41,15 +44,20 @@ from qscan.executor import ScanExecutor
 from qscan.interfaces.api import cursors
 from qscan.interfaces.api.localauth import TokenAuthenticator
 from qscan.interfaces.api.schemas import (
+    AutomationJobOut,
+    AutomationRunOut,
+    AutomationStatusOut,
     CountsOut,
     CreateScan,
     CreateWatchlist,
     ErrorEnvelope,
     InstrumentOut,
+    NotificationStatusOut,
     PatchWatchlist,
     ProgressOut,
     PutReview,
     ReplaceSymbols,
+    ReportStatusOut,
     ResultOut,
     ResultsPage,
     ReviewsPage,
@@ -61,14 +69,17 @@ from qscan.interfaces.api.schemas import (
     ScanStatusOut,
     SeriesOut,
     SessionOut,
+    UniverseStatusOut,
     WatchlistLinks,
     WatchlistOut,
 )
+from qscan.runtime import instance_challenge
 
 MAX_BODY_BYTES = 1_000_000
 MAX_CURSOR_LIMIT = 200
 DEFAULT_CURSOR_LIMIT = 50
 MAX_KEY_LENGTH = 128
+BROWSER_SESSION_COOKIE = "qscan_session"
 # Cursor payload schema version: any pagination/sort change must bump it so old
 # cursors die loudly instead of paginating new data with stale semantics.
 _CURSOR_VERSION = 1
@@ -111,7 +122,7 @@ def error_response(
 
 
 class SecurityMiddleware(BaseHTTPMiddleware):
-    """Host allowlist, Origin deny-by-default, request id, and bearer auth."""
+    """Host/Origin checks plus Bearer or same-origin browser-session auth."""
 
     def __init__(
         self,
@@ -131,11 +142,28 @@ class SecurityMiddleware(BaseHTTPMiddleware):
 
     async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Any:
         request.state.request_id = uuid4()
+        path = request.url.path
+
+        def secured(response: Response) -> Response:
+            response.headers["X-Request-Id"] = str(request.state.request_id)
+            response.headers["Content-Security-Policy"] = (
+                "default-src 'none'; style-src 'unsafe-inline'; img-src data:; "
+                "object-src 'none'; frame-ancestors 'none'; base-uri 'none'"
+                if path.startswith("/api/v1/reports/")
+                else "default-src 'self'; object-src 'none'; frame-ancestors 'none'; "
+                "base-uri 'none'"
+            )
+            response.headers["X-Frame-Options"] = "DENY"
+            response.headers["X-Content-Type-Options"] = "nosniff"
+            return response
+
         host = request.headers.get("host", "")
         hostname = host.rsplit(":", 1)[0] if "]:" not in host and host.count(":") == 1 else host
         if hostname not in self.allowed_hosts:
-            return error_response(
-                403, ErrorCode.FORBIDDEN.value, "Host is not allowed", request.state.request_id
+            return secured(
+                error_response(
+                    403, ErrorCode.FORBIDDEN.value, "Host is not allowed", request.state.request_id
+                )
             )
         origin = request.headers.get("origin")
         # No CORS is offered: any Origin (including "null") outside the strict
@@ -144,23 +172,56 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         # loopback listen origins + explicit dev origins), never reflected
         # from the request.
         if origin is not None and origin not in self.allowed_origins:
-            return error_response(
-                403, ErrorCode.FORBIDDEN.value, "Origin is not allowed", request.state.request_id
+            return secured(
+                error_response(
+                    403,
+                    ErrorCode.FORBIDDEN.value,
+                    "Origin is not allowed",
+                    request.state.request_id,
+                )
             )
-        path = request.url.path
+        if path == "/api/v1/auth/session" and (
+            origin not in self.allowed_origins
+            or request.headers.get("sec-fetch-site") not in {"same-origin", "none"}
+        ):
+            return secured(
+                error_response(
+                    403,
+                    ErrorCode.FORBIDDEN.value,
+                    "Browser session bootstrap requires same-origin navigation",
+                    request.state.request_id,
+                )
+            )
         anonymous = path in self.exempt or any(
             path == prefix or path.startswith(prefix + "/") for prefix in self.exempt_prefixes
         )
-        if not anonymous and not self.authenticator.check(request.headers.get("authorization")):
-            return error_response(
-                401,
-                ErrorCode.UNAUTHORIZED.value,
-                "Missing or invalid bearer token",
-                request.state.request_id,
+        bearer = self.authenticator.check(request.headers.get("authorization"))
+        csrf = self.authenticator.browser_csrf(request.cookies.get(BROWSER_SESSION_COOKIE))
+        if not anonymous and not bearer and csrf is None:
+            return secured(
+                error_response(
+                    401,
+                    ErrorCode.UNAUTHORIZED.value,
+                    "Missing or invalid authentication",
+                    request.state.request_id,
+                )
             )
-        response = await call_next(request)
-        response.headers["X-Request-Id"] = str(request.state.request_id)
-        return response
+        if not anonymous and not bearer and request.method not in {"GET", "HEAD", "OPTIONS"}:
+            supplied = request.headers.get("x-csrf-token")
+            if (
+                origin is None
+                or supplied is None
+                or not secrets.compare_digest(supplied, csrf or "")
+            ):
+                return secured(
+                    error_response(
+                        403,
+                        ErrorCode.FORBIDDEN.value,
+                        "Browser mutation requires same-origin CSRF proof",
+                        request.state.request_id,
+                    )
+                )
+        return secured(await call_next(request))
 
 
 class _BodyTooLarge(StarletteHTTPException):
@@ -272,6 +333,7 @@ def create_app(
     allowed_origins: tuple[str, ...] = (),
     dev_openapi: bool = False,
     executor: ScanExecutor | None = None,
+    coordinator: DailyCoordinator | None = None,
     ui_assets: Path | None = None,
 ) -> FastAPI:
     """Build the FastAPI app without touching the database or network.
@@ -281,7 +343,10 @@ def create_app(
     """
     authenticator = TokenAuthenticator(token_path)
     worker = executor
-    exempt = frozenset({"/health/live", "/health/ready"})
+    daily = coordinator
+    exempt = frozenset(
+        {"/health/live", "/health/ready", "/api/v1/auth/session", "/api/v1/instance/challenge"}
+    )
     # The compiled UI shell is static build output (no data, no secrets); it is
     # the only anonymous path besides health. Every /api route still requires
     # the bearer token, and /api 404s are never swallowed by an SPA fallback.
@@ -293,12 +358,19 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
-        nonlocal worker
+        nonlocal worker, daily
         if worker is None:
             worker = ScanExecutor(scanner)
         if owns_worker:
             worker.start()
+        if daily is None:
+            daily = DailyCoordinator(scanner, executor=worker)
+        if scanner.repository.automation_enabled():
+            daily.start()
+            daily.request_tick()
         yield
+        if daily is not None and daily.alive:
+            daily.stop()
         # An injected executor belongs to its caller (serve/tests manage it);
         # only a self-created one is stopped with the app.
         if owns_worker and worker.stop():
@@ -315,6 +387,7 @@ def create_app(
         openapi_url="/openapi.json" if dev_openapi else None,
     )
     app.state.queue_limit = queue_limit
+    app.state.daily = daily
     app.add_middleware(BodyLimitMiddleware, limit=MAX_BODY_BYTES)
     app.add_middleware(
         SecurityMiddleware,
@@ -356,6 +429,163 @@ def create_app(
 
     Principal = Annotated[Application, Depends(scoped)]
     CursorSecret = Annotated[str, Depends(secret)]
+
+    def daily_coordinator() -> DailyCoordinator:
+        value = daily
+        if value is None:
+            raise ApplicationError(ErrorCode.INTERNAL_ERROR, "Coordinator is unavailable")
+        return value
+
+    def automation_out(value: Any) -> AutomationStatusOut:
+        run = value.latest_run
+        terminal = run is not None and run.state in (
+            RunState.SUCCEEDED,
+            RunState.PARTIAL,
+            RunState.FAILED,
+        )
+        publication = value.report
+        delivery = value.notification
+        return AutomationStatusOut(
+            enabled=value.enabled,
+            latest_completed_session=value.latest_job.session if value.latest_job else None,
+            job=AutomationJobOut(
+                id=value.latest_job.id,
+                session=value.latest_job.session,
+                attempt=value.latest_job.attempt,
+                run_id=value.latest_job.run_id,
+            )
+            if value.latest_job
+            else None,
+            run=AutomationRunOut(
+                id=run.id,
+                state=run.state.value,
+                progress=ProgressOut(**run.progress.model_dump()) if run.progress else None,
+                counts=CountsOut(**run.counts.model_dump()) if terminal else None,
+            )
+            if run
+            else None,
+            next_due_session=value.next_due_session,
+            next_due_time=value.next_due_time,
+            universe=UniverseStatusOut(
+                snapshot_id=value.universe.id,
+                source_url=value.universe.source_url,
+                source_license=value.universe.source_license,
+                source_revision=value.universe.source_revision,
+                retrieved_at=value.universe.retrieved_at,
+                member_count=value.universe.actual_member_count,
+                freshness=value.universe_freshness,
+            )
+            if value.universe
+            else None,
+            report=ReportStatusOut(
+                run_id=publication.run_id,
+                state=publication.state,
+                attempts=publication.attempts,
+                url=(
+                    f"/api/v1/reports/{publication.run_id}"
+                    if publication.state == "PUBLISHED"
+                    else None
+                ),
+                error=publication.error,
+            )
+            if publication
+            else None,
+            notification=NotificationStatusOut(
+                outcome=delivery.outcome,
+                attempts=delivery.attempts,
+                detail=delivery.detail,
+            )
+            if delivery
+            else None,
+        )
+
+    @app.post("/api/v1/auth/session", include_in_schema=False)
+    def browser_session(response: Response) -> dict[str, str]:
+        session, csrf = authenticator.issue_browser_session()
+        response.set_cookie(
+            BROWSER_SESSION_COOKIE,
+            session,
+            max_age=15 * 60,
+            httponly=True,
+            samesite="strict",
+            path="/api",
+        )
+        return {"csrf_token": csrf}
+
+    @app.get("/api/v1/instance/challenge", include_in_schema=False)
+    def challenge(
+        nonce: Annotated[str, Query(min_length=16, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")],
+    ) -> dict[str, str]:
+        return instance_challenge(
+            authenticator.instance_id,
+            authenticator.instance_secret,
+            scanner.data_dir,
+            nonce,
+        ) | {"provider": scanner.provider.name}
+
+    # --- packaged managed daily workflow ---
+
+    @app.get("/api/v1/automation/status")
+    def automation_status(api: Principal) -> AutomationStatusOut:
+        return automation_out(daily_coordinator().status())
+
+    @app.post("/api/v1/automation/enable")
+    def automation_enable(api: Principal) -> AutomationStatusOut:
+        coordinator_value = daily_coordinator()
+        value = coordinator_value.enable()
+        coordinator_value.start()
+        coordinator_value.request_tick()
+        return automation_out(value)
+
+    @app.post("/api/v1/automation/pause")
+    def automation_pause(api: Principal) -> AutomationStatusOut:
+        coordinator_value = daily_coordinator()
+        value = coordinator_value.pause()
+        coordinator_value.stop()
+        return automation_out(value)
+
+    @app.post("/api/v1/automation/run-now")
+    def automation_run_now(api: Principal) -> AutomationStatusOut:
+        coordinator_value = daily_coordinator()
+        coordinator_value.start()
+        return automation_out(coordinator_value.run_now())
+
+    @app.get("/api/v1/reports/latest")
+    def latest_report(api: Principal) -> ReportStatusOut:
+        publication = api.repository.latest_report_publication()
+        if publication is None:
+            return ReportStatusOut(state="MISSING")
+        return ReportStatusOut(
+            run_id=publication.run_id,
+            state=publication.state,
+            attempts=publication.attempts,
+            url=(
+                f"/api/v1/reports/{publication.run_id}"
+                if publication.state == "PUBLISHED"
+                else None
+            ),
+            error=publication.error,
+        )
+
+    @app.get("/api/v1/reports/{identity}", include_in_schema=False)
+    def report_file(api: Principal, identity: UUID) -> FileResponse:
+        publication = api.repository.report_publication(identity)
+        if publication is None or publication.state != "PUBLISHED" or not publication.relative_path:
+            raise ApplicationError(ErrorCode.NOT_FOUND)
+        root = (api.data_dir / "reports").resolve()
+        target = (root / publication.relative_path).resolve()
+        if not target.is_relative_to(root):
+            raise ApplicationError(ErrorCode.NOT_FOUND)
+        if not target.is_file():
+            publication = PublicationService(api.repository, api.reports, api.data_dir).publish(
+                identity
+            )
+            if not publication.relative_path:
+                raise ApplicationError(ErrorCode.NOT_FOUND)
+            target = (root / publication.relative_path).resolve()
+            if not target.is_relative_to(root) or not target.is_file():
+                raise ApplicationError(ErrorCode.NOT_FOUND)
+        return FileResponse(target, media_type="text/html; charset=utf-8")
 
     # --- health (minimal by design: no paths, versions or secrets) ---
 
@@ -863,6 +1093,7 @@ def run_serve(
     clock: Clock | None = None,
     dev_openapi: bool = False,
     dev_origins: tuple[str, ...] = (),
+    automation: bool = False,
     log_level: str = "warning",
 ) -> int:
     """Entry point for `qscan serve`: ownership, recovery, executor, HTTP, shutdown."""
@@ -871,6 +1102,11 @@ def run_serve(
     from qscan.bootstrap import bootstrap
     from qscan.executor import NullLock
     from qscan.interfaces.api.localauth import ensure_token
+    from qscan.runtime import is_loopback
+
+    if not is_loopback(host):
+        emit_error("FORBIDDEN", "serve is restricted to loopback")
+        return 2
 
     created = ensure_token(token_path)[1]
     try:
@@ -889,6 +1125,14 @@ def run_serve(
         return 4
     executor = ScanExecutor(scanner, stop_grace=stop_grace)
     recovered = executor.start()
+    origin_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    coordinator = DailyCoordinator(
+        scanner,
+        executor=executor,
+        report_base_url=f"http://{origin_host}:{port}/ui/",
+    )
+    if automation:
+        coordinator.enable()
     print(
         f"qscan serve: engine {__version__}, provider {provider.name}, "
         f"recovered {recovered} interrupted run(s)",
@@ -907,6 +1151,7 @@ def run_serve(
         allowed_origins=(*origins, *dev_origins),
         dev_openapi=dev_openapi,
         executor=executor,
+        coordinator=coordinator,
     )
     if created:
         print(f"Local API token created at {token_path}", file=sys.stderr, flush=True)
@@ -920,6 +1165,8 @@ def run_serve(
             timeout_graceful_shutdown=int(stop_grace),
         )
     finally:
+        if coordinator.alive:
+            coordinator.stop()
         if executor.stop():
             with suppress(Exception):
                 ownership.release()

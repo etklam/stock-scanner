@@ -1,12 +1,15 @@
 # Close-only Setup Scanner
 
-**現況（0.1.0rc1＋Phase 6A，2026-09-06）：** 可安裝、可日常使用的本地 V1 發布候選——
+**現況（0.1.0rc1＋Phase 6B；zero-friction daily workflow，2026-09-18）：**
+可安裝、可日常使用的本地 V1 發布候選——
 **CLI + loopback HTTP API + 本地覆核 UI**，個人美股 EOD 試用。功能：匯入名單、
 同步（CLI）或佇列（API）掃描、瀏覽器完成「選名單→掃描→查看候選與 Close 圖→
 保存覆核標記」、歷史查詢、固定 baseline 每日比較、JSON／CSV／離線 HTML 報告、
 immutable snapshot replay、一致備份／驗證／還原、排程範例與人工覆核匯出。
 Yahoo 在鎖定依賴下為 **EOD_TRIAL**：只掃已完成交易日、metadata 已驗證的美股／ETF；
 盤中與 production 行情未放行（[驗收決定](docs/adr/0004-eod-trial-acceptance.md)）。
+一般本機入口用 `qscan start`：自動建立 browser session、更新 managed universe、
+按完成交易日排程掃描、發布報告及記錄 desktop notification 結果，詳見 F 節。
 明確不提供：下單、績效回測、多使用者／公開部署、自動交易、手機遠端連線。
 API 合約見 [api.md](docs/api.md)；備份／排程／UI 運維見 [operations](docs/operations.md)；
 本輪證據總表見 [release checklist](docs/release-checklist.md)。
@@ -145,7 +148,27 @@ JSON stdout 只有一份合法 JSON；warnings／progress 在 stderr，錯誤有
 replay 拒絕；不以最新 cache 補圖。比較條件與 legacy run 限制見
 [data quality](docs/data-quality.md)，診斷與備份見 [operations](docs/operations.md)。
 
-## C. 本地 HTTP API（Phase 4）
+## C. 本地啟動與 HTTP API
+
+一般本機使用可直接啟動並開啟瀏覽器：
+
+```sh
+export QSCAN_DATA_DIR="$HOME/qscan-personal"
+uv run qscan start              # 預設 127.0.0.1:8000，初始化後開啟 /ui/
+```
+
+`qscan start` 只接受 loopback host。若同一 URL 已有 qscan 運行，程式會先以
+nonce challenge 驗證該 process 的 instance identity 及同一 data directory，
+驗證成功先重用並開啟 UI；唔會只因為 port 有回應就信任或重用。新 instance 會
+初始化／升級資料目錄、啟動本機 server，並等到同一驗證成功先開瀏覽器。呢條路徑
+目前**唔會**自動更新 S&P 500、執行每日掃描、產生報告或安裝開機自啟。
+
+同 origin UI 會自動建立 15 分鐘、HttpOnly、SameSite=Strict 的簽名 browser
+session；session cookie 只限 `/api`，寫入操作另要記憶體內 CSRF token 及精確
+Origin。一般使用唔再需要貼 token。Bearer token 仍保留畀進階 HTTP client；
+無 Origin 的 Bearer client 行為不變。
+
+需要分開控制 server 的進階用法：
 
 未來 App 或一般 HTTP client 走同一套 application services：
 
@@ -171,8 +194,11 @@ curl -s http://127.0.0.1:8000/health/ready
 curl -s -H "Authorization: Bearer $TOKEN" -H "Idempotency-Key: 3f56af32-5f96-4ff1-9d44-0f02be7a1a94"   -H "Content-Type: application/json"   -d '{"watchlist_id":"<uuid>","as_of_session":"2026-09-04","data_mode":"auto"}'   http://127.0.0.1:8000/api/v1/scans -i
 ```
 
-安全與語義：只綁 loopback；所有 `/api/v1/*` 需 bearer token；Origin 一律拒絕
-（無 CORS）、Host 限 localhost；watchlist/run/result 全部 owner-scoped。
+安全與語義：只綁 loopback；業務 API 接受自動 browser session 或 Bearer token。
+Browser session bootstrap 只接受同 origin navigation；cookie-authenticated 寫入另需
+精確 Origin＋CSRF。Bearer client 可繼續不帶 Origin；任何有 Origin 的請求都要符合
+server allowlist，且不提供 CORS。Host 限 loopback；watchlist/run/result 全部
+owner-scoped。
 `qscan token-rotate` 明確輪換（即時生效，principal 不變）。
 冪等：同 key 同請求回原任務（重試 200 顯示真實狀態）、不同請求 409；
 QUEUED 上限 20（429 `QUEUE_LIMIT_REACHED`）；強制 kill 後重啟由 startup recovery
@@ -217,16 +243,17 @@ immutable scan snapshot）。
 
 ## E. 本地覆核 UI（Phase 6A）
 
-`qscan serve` 之後，瀏覽器打開 **`http://127.0.0.1:8000/ui/`**：
+建議用 `qscan start` 自動啟動及打開 **`http://127.0.0.1:8000/ui/`**；
+`qscan serve` 仍保留畀進階操作：
 
 ```sh
 export QSCAN_DATA_DIR="$HOME/qscan-personal"
-uv run qscan init      # 建立資料目錄與本機 API token（api-token.json，0600）
-uv run qscan serve     # 之後開瀏覽器 /ui/
+uv run qscan start
 ```
 
-- 第一次進入 UI 要貼上 `api-token.json` 內嘅 token；**token 只存在瀏覽器
-  記憶體**，唔會寫入任何 storage 或 URL；401／輪換後要求重新連線。
+- UI 會自動建立短效本機 browser session，唔會把 API Bearer token 交畀瀏覽器。
+  自動連線失敗時可重試；進階 Bearer 輸入仍可用，token 只存在記憶體，唔會寫入
+  storage 或 URL。
 - 三個畫面：**名單與掃描**（建立／改名／貼上 symbols、揀 data mode、提交後
   即時顯示 scan ID 與實際進度；double-click／reload 唔會重建重複任務）、
   **歷史**（cursor 分頁、候選／全部有效評估對照、零候選／PARTIAL／FAILED／
@@ -243,6 +270,32 @@ uv run qscan serve     # 之後開瀏覽器 /ui/
 - 覆核標記按 run＋標的保存（同 principal），有 revision 衝突保護；更新標記
   唔會改寫分數或排名，亦唔會自動帶去第二日；備份／還原包含標記。
   呢個係單人本地介面：只綁 loopback，唔聲稱手機或遠端可用。
+
+## F. Managed S&P 500、每日報告與通知
+
+目前程式內部已有 managed S&P 500 universe service 及 migration 0005。來源係英文
+Wikipedia [List of S&P 500 companies](https://en.wikipedia.org/wiki/List_of_S%26P_500_companies)，
+經 MediaWiki API 讀取；每個已接受 snapshot 保存來源 URL、
+[CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)、Wikipedia revision、觀察／擷取時間、內容 hash
+及實際成員數。呢個係公開二手名單，**唔係 S&P、交易所或其他官方／認證 feed**，
+亦唔提供歷史 point-in-time 成分。重用或再發布來源內容時，使用者仍要自行遵守
+Wikipedia／CC BY-SA 的署名、授權及其他適用限制。
+
+更新只有喺完整解析、symbol 驗證及 450–550 個成員安全範圍內先原子發布；失敗會保留
+last-known-good（LKG）。LKG 擷取時間最多七個曆日（剛好七日仍可用）；再舊或從未有
+有效 snapshot 會回 `STALE_DATA`，唔會當成空名單成功。相同內容成功重新擷取可更新
+LKG 時效而唔增加 managed watchlist revision；BRK.A／BRK.B 等 share lines 保持獨立。
+
+`qscan start` 會啟用 packaged coordinator。每個完成交易日接受一個 normal job，凍結
+universe snapshot／provider／rules/config，按 50 隻一批保存 input checkpoint；重啟會由
+同一 run 繼續，最後只做一次全 universe 排名、HTML report publication 及最多三次通知
+嘗試。Today／History／Settings 係主要 UI；手動名單及掃描移到進階區。
+
+登入後自動啟動可明確執行 `qscan autostart install`，狀態用
+`qscan autostart status`；今次實作及測試無替使用者安裝排程。Mac 通知目前可顯示但無
+可點擊 report action；macOS 顯示命令已於本輪實機回傳 exit 0，Windows／Linux action
+只經 fake-runner 測試。通知係 best-effort attempt，唔等於使用者已看見；remote
+delivery 仍未配置。
 
 ## 驗證與開發入口
 
